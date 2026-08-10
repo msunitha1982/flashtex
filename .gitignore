@@ -1,0 +1,28 @@
+# Swift Package Manager
+.build/
+
+# Build artifacts
+FlashTeX.app/
+*.o
+*.swiftmodule
+
+# macOS
+.DS_Store
+
+# TeX droppings
+*.aux
+*.log
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+texput.log
+doc-1.pdf
+
+# Xcode
+*.xcodeproj/
+xcuserdata/
+DerivedData/

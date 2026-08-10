@@ -1,0 +1,216 @@
+import AppKit
+
+// AppDelegate — application lifecycle and the native menu bar.
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+
+    private var controller: MainWindowController?
+    private var settingsObserver: NSObjectProtocol?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.mainMenu = buildMainMenu()
+        applyAppearance()
+
+        // Follow the light/dark setting (and flavour changes) immediately.
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: SettingsStore.changedNotification,
+            object: nil, queue: .main) { [weak self] note in
+                guard let key = note.userInfo?["key"] as? String else { return }
+                if key == SettingsStore.Key.appearanceMode.rawValue {
+                    self?.applyAppearance()
+                }
+            }
+
+        let controller = MainWindowController()
+        controller.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        self.controller = controller
+    }
+
+    /// Lock the app-wide appearance to the user's setting so native controls
+    /// (menus, toolbars, panels) match the chosen theme.
+    private func applyAppearance() {
+        let appearance = SettingsStore.shared.isDarkMode
+            ? NSAppearance(named: .darkAqua) : NSAppearance(named: .aqua)
+        NSApp.appearance = appearance
+        if let window = controller?.window {
+            window.appearance = appearance
+        }
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
+    }
+
+    func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
+        true
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        controller?.shutdown()
+        if let settingsObserver {
+            NotificationCenter.default.removeObserver(settingsObserver)
+        }
+    }
+
+    // MARK: - Menu bar
+
+    private func buildMainMenu() -> NSMenu {
+        let main = NSMenu()
+
+        // ---- App menu -------------------------------------------------------
+        let appItem = NSMenuItem()
+        main.addItem(appItem)
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "About FlashTeX",
+                        action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+                        keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Settings…",
+                        action: #selector(showSettings(_:)),
+                        keyEquivalent: ",")
+        let hideOthers = appMenu.addItem(withTitle: "Hide Others",
+                                         action: #selector(NSApplication.hideOtherApplications(_:)),
+                                         keyEquivalent: "h")
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(withTitle: "Show All",
+                        action: #selector(NSApplication.unhideAllApplications(_:)),
+                        keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Quit FlashTeX",
+                        action: #selector(NSApplication.terminate(_:)),
+                        keyEquivalent: "q")
+        appItem.submenu = appMenu
+
+        // ---- File menu ------------------------------------------------------
+        main.addItem(menu(title: "File", items: [
+            item("New", "n", #selector(MainWindowController.newDocument), .command),
+            item("Open…", "o", #selector(MainWindowController.openDocument), .command),
+            .separator(),
+            item("Save", "s", #selector(MainWindowController.saveDocument), .command),
+            item("Save As…", "S", #selector(MainWindowController.saveDocumentAs), .command),
+            item("Export PDF…", "E", #selector(MainWindowController.exportPDF), .cmdShift),
+            .separator(),
+            item("Open PDF in Preview", "", #selector(MainWindowController.openPdfInPreview)),
+            item("Reveal PDF in Finder", "", #selector(MainWindowController.revealPdfInFinder)),
+            .separator(),
+            item("Close", "w", #selector(NSWindow.performClose(_:)), .command),
+        ]))
+
+        // ---- Edit menu (standard responder-chain editing) ------------------
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(NSMenuItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z"))
+        editMenu.addItem(NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "Z"))
+        editMenu.addItem(.separator())
+        editMenu.addItem(NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
+        editMenu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+        editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        editMenu.addItem(.separator())
+
+        let findItem = NSMenuItem(title: "Find", action: nil, keyEquivalent: "")
+        let findMenu = NSMenu(title: "Find")
+        for (title, key, tag) in [("Find…", "f", NSTextFinder.Action.showFindInterface.rawValue),
+                                  ("Find Next", "g", NSTextFinder.Action.nextMatch.rawValue),
+                                  ("Find Previous", "G", NSTextFinder.Action.previousMatch.rawValue),
+                                  ("Use Selection for Find", "e", NSTextFinder.Action.setSearchString.rawValue)] {
+            let mi = NSMenuItem(title: title,
+                                action: #selector(NSTextView.performFindPanelAction(_:)),
+                                keyEquivalent: key)
+            mi.tag = tag
+            findMenu.addItem(mi)
+        }
+        findItem.submenu = findMenu
+        editMenu.addItem(findItem)
+        let editItem = NSMenuItem()
+        main.addItem(editItem)
+        editItem.submenu = editMenu
+
+        // ---- Compile menu ---------------------------------------------------
+        let compileItem = NSMenuItem()
+        main.addItem(compileItem)
+        let compileMenu = NSMenu(title: "Compile")
+        compileMenu.addItem(item("Compile Now", "r", #selector(MainWindowController.compileNow), .command))
+        compileMenu.addItem(item("Pause Live Compile", "", #selector(MainWindowController.toggleAutoCompile)))
+        compileMenu.addItem(item("Show Errors…", "", #selector(MainWindowController.showErrorSheet)))
+        compileMenu.addItem(.separator())
+
+        let engineItem = NSMenuItem(title: "Engine", action: nil, keyEquivalent: "")
+        let engineMenu = NSMenu(title: "Engine")
+        for name in ["pdflatex", "xelatex", "lualatex"] {
+            let mi = NSMenuItem(title: name,
+                                action: #selector(MainWindowController.chooseEngine(_:)),
+                                keyEquivalent: "")
+            mi.representedObject = name
+            mi.target = nil                      // resolved via first responder validation
+            engineMenu.addItem(mi)
+        }
+        engineItem.submenu = engineMenu
+        compileMenu.addItem(engineItem)
+        compileItem.submenu = compileMenu
+
+        // ---- View menu ------------------------------------------------------
+        main.addItem(menu(title: "View", items: [
+            item("Toggle PDF Preview", "p", #selector(MainWindowController.togglePreview), .cmdShift),
+            .separator(),
+            item("Zoom In Preview", "=", #selector(MainWindowController.zoomPreviewIn), .cmdShift),
+            item("Zoom Out Preview", "-", #selector(MainWindowController.zoomPreviewOut), .cmdShift),
+            item("Fit Preview to Width", "0", #selector(MainWindowController.fitPreviewWidth), .cmdShift),
+            .separator(),
+            // Responder-chain zoom: the focused editor (main or Flash) handles
+            // ⌘=/⌘-/⌘0 itself; MainWindowController acts as the fallback.
+            item("Zoom In", "=", #selector(EditorTextView.zoomIn(_:))),
+            item("Zoom Out", "-", #selector(EditorTextView.zoomOut(_:))),
+            item("Actual Size", "0", #selector(EditorTextView.resetZoom(_:))),
+            .separator(),
+            item("Customize Toolbar…", "", #selector(MainWindowController.customizeToolbar)),
+            item("Hide Toolbar", "T", #selector(MainWindowController.toggleToolbar(_:)),
+                 [.command, .option]),
+        ]))
+
+        // ---- Flash menu -----------------------------------------------------
+        let flashItem = NSMenuItem()
+        main.addItem(flashItem)
+        let flashMenu = NSMenu(title: "Flash")
+        let flashMode = item("Flash Mode…", "k",
+                             #selector(MainWindowController.toggleFlashMode), .command)
+        flashMenu.addItem(flashMode)
+        flashItem.submenu = flashMenu
+
+        // ---- Window menu ----------------------------------------------------
+        let windowItem = NSMenuItem()
+        main.addItem(windowItem)
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(NSMenuItem(title: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m"))
+        windowMenu.addItem(NSMenuItem(title: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: ""))
+        windowItem.submenu = windowMenu
+        NSApp.windowsMenu = windowMenu
+
+        return main
+    }
+
+    // MARK: - Menu construction helpers
+
+    @objc private func showSettings(_ sender: Any?) {
+        SettingsWindowController.present()
+    }
+
+    private func item(_ title: String, _ key: String, _ action: Selector,
+                      _ mask: NSEvent.ModifierFlags = .command) -> NSMenuItem {
+        let mi = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        mi.keyEquivalentModifierMask = mask
+        return mi
+    }
+
+    private func menu(title: String, items: [NSMenuItem]) -> NSMenuItem {
+        let parent = NSMenuItem()
+        let menu = NSMenu(title: title)
+        for it in items { menu.addItem(it) }
+        parent.submenu = menu
+        return parent
+    }
+}
+
+private extension NSEvent.ModifierFlags {
+    static let cmdShift: NSEvent.ModifierFlags = [.command, .shift]
+}
