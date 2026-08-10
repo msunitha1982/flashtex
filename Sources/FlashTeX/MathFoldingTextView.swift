@@ -471,18 +471,20 @@ final class MathFoldingTextView: VimTextView {
 
     // MARK: - Interaction
 
-    /// Clicking a folded block puts the caret inside it so it unfolds.
+    /// Clicking a folded block puts the caret inside it (at the position under
+    /// the pointer, mapped proportionally across the rendered image) so it
+    /// unfolds.
     override func mouseDown(with event: NSEvent) {
         if foldEnabled {
             let point = convert(event.locationInWindow, from: nil)
-            if let range = foldedRange(at: point) {
+            if let block = block(at: point) {
                 if SettingsStore.shared.unfoldTrigger == .hover {
                     // Unfold-on-hover: the clicked block becomes the hovered one.
-                    hoverBlock = mathBlocks.first { $0.range.location == range.location }
+                    hoverBlock = block
                 }
                 let text = string as NSString
-                let inner = NSRange(location: min(range.location + 1, text.length), length: 0)
-                setSelectedRange(inner)
+                let caret = caretLocation(for: point, in: block, text: text)
+                setSelectedRange(NSRange(location: caret, length: 0))
                 window?.makeFirstResponder(self)
                 return
             }
@@ -490,25 +492,85 @@ final class MathFoldingTextView: VimTextView {
         super.mouseDown(with: event)
     }
 
-    private func foldedRange(at point: NSPoint) -> NSRange? {
-        guard foldEnabled, let lm = layoutManager, let tc = textContainer else { return nil }
-        let origin = textContainerOrigin
-        let colorHex = currentColorHex()
+    /// The folded block whose rendered image (or hidden glyph box, before the
+    /// image is ready) contains `point`.
+    private func block(at point: NSPoint) -> MathBlock? {
         for block in hiddenBlocks {
-            let range = block.range
-            guard range.location != NSNotFound,
-                  range.location + range.length <= (string as NSString).length else { continue }
-            let key = MathRenderer.key(for: block.body,
-                                       display: block.display,
-                                       colorHex: colorHex)
-            guard !unrenderableKeys.contains(key) else { continue }
-            let glyphRange = lm.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-            guard glyphRange.location != NSNotFound else { continue }
-            let rect = lm.boundingRect(forGlyphRange: glyphRange, in: tc)
-                .offsetBy(dx: origin.x, dy: origin.y)
-            if rect.insetBy(dx: -3, dy: -2).contains(point) { return range }
+            guard let rect = imageRect(for: block) else { continue }
+            if rect.insetBy(dx: -3, dy: -2).contains(point) { return block }
         }
         return nil
+    }
+
+    /// Map a click position inside a folded block's image to a character index
+    /// in the raw LaTeX. The horizontal fraction of the click within the image
+    /// is mapped onto the block's body (between the delimiters), so clicking
+    /// the middle of a rendered fraction drops the caret at the middle of its
+    /// source text rather than always at the start.
+    private func caretLocation(for point: NSPoint, in block: MathBlock, text: NSString) -> Int {
+        let rect = imageRect(for: block)
+        let minX = rect?.minX ?? point.x
+        let width = rect?.width ?? 10
+        let fraction = width > 0 ? min(max((point.x - minX) / width, 0), 1) : 0.5
+        let bodyStart = bodyStartOffset(for: block, text: text)
+        let blockEnd = min(block.range.location + block.range.length, text.length)
+        let span = max(1, blockEnd - 1 - bodyStart)
+        let caret = bodyStart + Int((fraction * CGFloat(span)).rounded())
+        return min(max(caret, bodyStart), max(bodyStart, blockEnd - 1))
+    }
+
+    /// Character index just past the opening delimiter of a block.
+    private func bodyStartOffset(for block: MathBlock, text: NSString) -> Int {
+        let loc = block.range.location
+        guard loc < text.length else { return 1 }
+        let c = text.character(at: loc)
+        if c == 36 {   // `$`
+            return (loc + 1 < text.length && text.character(at: loc + 1) == 36) ? 2 : 1
+        }
+        if c == 92 {   // `\`
+            if loc + 1 < text.length, text.character(at: loc + 1) == 91 { return 2 }   // `\[`
+            if loc + 7 <= text.length,
+               text.substring(with: NSRange(location: loc, length: 7)) == "\\begin{" {
+                var k = loc + 7
+                while k < text.length && text.character(at: k) != 125 { k += 1 }   // `}`
+                k += 1
+                if k < text.length && text.character(at: k) == 10 { k += 1 }       // newline
+                return k - loc
+            }
+        }
+        return 1
+    }
+
+    /// The draw rect (same geometry as `drawFolds`) of a folded block's image,
+    /// or of its hidden glyph box while the image is still rendering.
+    private func imageRect(for block: MathBlock) -> NSRect? {
+        guard foldEnabled, let lm = layoutManager, let tc = textContainer else { return nil }
+        let text = string as NSString
+        let range = block.range
+        guard range.location != NSNotFound,
+              range.location + range.length <= text.length else { return nil }
+        let glyphRange = lm.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        guard glyphRange.location != NSNotFound else { return nil }
+        let rect = lm.boundingRect(forGlyphRange: glyphRange, in: tc)
+            .offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
+
+        var imageSize: NSSize = rect.size
+        let colorHex = currentColorHex()
+        let key = MathRenderer.key(for: block.body, display: block.display, colorHex: colorHex)
+        if !unrenderableKeys.contains(key),
+           let image = MathRenderer.shared.cachedImage(forKey: key) {
+            let scale = fontScaling
+            imageSize = NSSize(width: image.size.width * scale,
+                               height: image.size.height * scale)
+        }
+
+        var drawX = rect.minX
+        if block.display {
+            let containerWidth = tc.size.width
+            drawX = textContainerOrigin.x + max(0, (containerWidth - imageSize.width) / 2)
+        }
+        return NSRect(x: drawX, y: rect.midY - imageSize.height / 2,
+                      width: imageSize.width, height: imageSize.height)
     }
 
     /// Unfold-on-hover: keep the block under the mouse visible so the caret can
@@ -517,9 +579,7 @@ final class MathFoldingTextView: VimTextView {
         super.mouseMoved(with: event)
         guard foldEnabled, SettingsStore.shared.unfoldTrigger == .hover else { return }
         let point = convert(event.locationInWindow, from: nil)
-        let block = foldedRange(at: point).flatMap { range in
-            mathBlocks.first { $0.range.location == range.location }
-        }
+        let block = block(at: point)
         if block?.range.location != hoverBlock?.range.location {
             hoverBlock = block
             scheduleRefresh()

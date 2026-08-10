@@ -33,6 +33,14 @@ final class MainWindowController: NSWindowController {
     private weak var enginePopup: NSPopUpButton?
     private weak var autoSwitch: NSSwitch?
 
+    // Compile status bar — deliberately lives outside the toolbar so collapse-
+    // ing the toolbar can never hide the fact that a compile is running (or
+    // that it failed).
+    private let statusBar = NSView()
+    private let statusSpinner = NSProgressIndicator()
+    private let statusLabel = NSTextField(labelWithString: "Ready")
+    private let statusEngineLabel = NSTextField(labelWithString: "")
+
     init() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1360, height: 860),
@@ -69,7 +77,77 @@ final class MainWindowController: NSWindowController {
         splitVC.addSplitViewItem(previewItem)
         splitVC.splitView.setPosition(560, ofDividerAt: 0)
 
-        window?.contentViewController = splitVC
+        // Root container = split view on top, status bar pinned underneath.
+        let rootVC = NSViewController()
+        let container = NSView()
+        rootVC.view = container
+        rootVC.addChild(splitVC)
+        splitVC.view.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(splitVC.view)
+        container.addSubview(statusBar)
+        makeStatusBar()
+        NSLayoutConstraint.activate([
+            splitVC.view.topAnchor.constraint(equalTo: container.topAnchor),
+            splitVC.view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            splitVC.view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            statusBar.topAnchor.constraint(equalTo: splitVC.view.bottomAnchor),
+            statusBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            statusBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            statusBar.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            statusBar.heightAnchor.constraint(equalToConstant: 26),
+        ])
+
+        window?.contentViewController = rootVC
+    }
+
+    private func makeStatusBar() {
+        statusBar.translatesAutoresizingMaskIntoConstraints = false
+        statusBar.wantsLayer = true
+        statusBar.layer?.backgroundColor = Theme.gutterBackground.cgColor
+
+        let separator = NSView()
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        separator.wantsLayer = true
+        separator.layer?.backgroundColor = Theme.separator.cgColor
+        statusBar.addSubview(separator)
+
+        statusSpinner.translatesAutoresizingMaskIntoConstraints = false
+        statusSpinner.style = .spinning
+        statusSpinner.controlSize = .small
+        statusSpinner.isHidden = true
+        statusBar.addSubview(statusSpinner)
+
+        statusLabel.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+        statusLabel.textColor = Theme.secondaryText
+        statusLabel.lineBreakMode = .byTruncatingHead
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        statusBar.addSubview(statusLabel)
+
+        statusEngineLabel.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+        statusEngineLabel.textColor = Theme.secondaryText
+        statusEngineLabel.alignment = .right
+        statusEngineLabel.translatesAutoresizingMaskIntoConstraints = false
+        statusEngineLabel.stringValue = compiler.engine
+        statusBar.addSubview(statusEngineLabel)
+
+        NSLayoutConstraint.activate([
+            separator.topAnchor.constraint(equalTo: statusBar.topAnchor),
+            separator.leadingAnchor.constraint(equalTo: statusBar.leadingAnchor),
+            separator.trailingAnchor.constraint(equalTo: statusBar.trailingAnchor),
+            separator.heightAnchor.constraint(equalToConstant: 1),
+
+            statusSpinner.leadingAnchor.constraint(equalTo: statusBar.leadingAnchor, constant: 10),
+            statusSpinner.centerYAnchor.constraint(equalTo: statusBar.centerYAnchor),
+            statusSpinner.widthAnchor.constraint(equalToConstant: 14),
+            statusSpinner.heightAnchor.constraint(equalToConstant: 14),
+
+            statusLabel.leadingAnchor.constraint(equalTo: statusSpinner.trailingAnchor, constant: 6),
+            statusLabel.centerYAnchor.constraint(equalTo: statusBar.centerYAnchor),
+            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: statusEngineLabel.leadingAnchor, constant: -12),
+
+            statusEngineLabel.trailingAnchor.constraint(equalTo: statusBar.trailingAnchor, constant: -10),
+            statusEngineLabel.centerYAnchor.constraint(equalTo: statusBar.centerYAnchor),
+        ])
     }
 
     private func makeEditorViewController() -> NSViewController {
@@ -213,11 +291,26 @@ final class MainWindowController: NSWindowController {
             currentErrors = []
             preview.load(pdfURL: pdfURL)
             removeErrorToolbarItem()
+            statusLabel.stringValue = "Rendered in \(report.elapsedMs) ms"
+            statusLabel.textColor = Theme.secondaryText
             return
         }
 
         currentErrors = report.errors
         insertErrorToolbarItem()
+        if currentErrors.isEmpty && !report.engineMessage.isEmpty {
+            // A setup-level failure (e.g. engine not installed): surface the
+            // guidance through the error viewer instead of a bare status text.
+            currentErrors = [LatexIssue(line: -1, message: report.engineMessage,
+                                        context: "", hint: "")]
+            insertErrorToolbarItem()
+            statusLabel.stringValue = "Setup issue — see Errors"
+            statusLabel.textColor = .systemOrange
+            return
+        }
+        statusLabel.stringValue = currentErrors.isEmpty ? "Compilation failed"
+                                                        : "\(currentErrors.count) error\(currentErrors.count == 1 ? "" : "s")"
+        statusLabel.textColor = .systemRed
     }
 
     // MARK: - Error viewer
@@ -369,6 +462,7 @@ final class MainWindowController: NSWindowController {
         window?.title = "FlashTeX"
         editor.updateGutter()
         highlighter.rehighlightNow(editor: editor, scrollView: scrollView)
+        compiler.resetIncrementalState()
         compiler.compileNow(source: editor.string)
     }
 
@@ -391,6 +485,7 @@ final class MainWindowController: NSWindowController {
             window?.title = url.lastPathComponent
             editor.updateGutter()
             highlighter.rehighlightNow(editor: editor, scrollView: scrollView)
+            compiler.resetIncrementalState()
             compiler.compileNow(source: editor.string)
         } catch {
             presentError(NSError(domain: "FlashTeX", code: 1,
@@ -489,11 +584,13 @@ final class MainWindowController: NSWindowController {
         guard let name = sender.representedObject as? String else { return }
         compiler.engine = name
         enginePopup?.selectItem(withTitle: name)
+        statusEngineLabel.stringValue = name
     }
 
     @objc func enginePopupChanged(_ sender: NSPopUpButton) {
         if let name = sender.titleOfSelectedItem {
             compiler.engine = name
+            statusEngineLabel.stringValue = name
         }
     }
 
@@ -550,6 +647,10 @@ final class MainWindowController: NSWindowController {
     /// flash the toolbar — it only appears "when necessary".
     private func beginCompilingIndicator() {
         isCompiling = true
+        statusLabel.stringValue = "Compiling…"
+        statusLabel.textColor = Theme.secondaryText
+        statusSpinner.isHidden = false
+        statusSpinner.startAnimation(nil)
         compilingDelay?.invalidate()
         let t = Timer(timeInterval: 0.25, repeats: false) { [weak self] _ in
             guard let self = self, self.isCompiling else { return }
@@ -563,6 +664,8 @@ final class MainWindowController: NSWindowController {
 
     private func endCompilingIndicator() {
         isCompiling = false
+        statusSpinner.stopAnimation(nil)
+        statusSpinner.isHidden = true
         compilingDelay?.invalidate()
         compilingDelay = nil
         removeProgressItem()

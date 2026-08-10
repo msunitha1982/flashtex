@@ -129,15 +129,17 @@ final class EditorTextView: VimTextView {
         let insertion = selectedRange().location
         guard insertion != NSNotFound,
               let lm = layoutManager, let tc = textContainer else { return }
-        let glyphRange = lm.glyphRange(forCharacterRange: NSRange(location: insertion, length: 0),
-                                       actualCharacterRange: nil)
-        guard glyphRange.location != NSNotFound else { return }
-        let origin = textContainerOrigin
-        let rect = lm.boundingRect(forGlyphRange: glyphRange, in: tc)
-            .offsetBy(dx: origin.x, dy: origin.y)
-        guard rect.intersects(dirtyRect) else { return }
+        let glyphIndex = lm.glyphIndexForCharacter(at: insertion)
+        guard glyphIndex != NSNotFound else { return }
+        // The line-fragment rect is the full line box (centred on the text
+        // line, exactly one line tall) — the glyph bounding rect of the
+        // insertion point is a stub that can sit at the wrong height and bleed
+        // into the neighbouring lines.
+        let lineRect = lm.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+            .offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
+        guard lineRect.intersects(dirtyRect) else { return }
         Theme.currentLine.setFill()
-        NSRect(x: 0, y: rect.minY, width: bounds.width, height: rect.height).fill()
+        NSRect(x: 0, y: lineRect.minY, width: bounds.width, height: lineRect.height).fill()
     }
 
     private func drawGutter(in dirtyRect: NSRect) {

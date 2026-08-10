@@ -19,7 +19,7 @@ final class SettingsWindowController: NSWindowController {
     private var lineIndicatorWell: NSColorWell!
     private var backgroundOverrideWell: NSColorWell!
     private var backgroundUsePalette: NSButton!
-    private var syntaxWells: [String: NSColorWell] = [:]
+    private var syntaxPopups: [String: NSPopUpButton] = [:]
 
     private var fontPopup: NSPopUpButton!
     private var lineHeightSlider: NSSlider!
@@ -192,18 +192,29 @@ final class SettingsWindowController: NSWindowController {
 
         let grid = NSGridView(views: [])
         grid.rowSpacing = 6
-        grid.columnSpacing = 10
-        for (role, displayName) in Theme.syntaxRoles {
-            let well = NSColorWell()
-            well.color = Theme.nsColor(from: settings.syntaxOverride(for: role) ?? "")
-                ?? Theme.c(role, overrideKey: role)
-            well.target = self
-            well.action = #selector(syntaxColorChanged(_:))
-            well.identifier = NSUserInterfaceItemIdentifier(role)
-            well.translatesAutoresizingMaskIntoConstraints = false
-            well.widthAnchor.constraint(equalToConstant: 120).isActive = true
-            grid.addRow(with: [label(displayName), well])
-            syntaxWells[role] = well
+        grid.columnSpacing = 16
+        let roles = Theme.syntaxRoles
+        for i in stride(from: 0, to: roles.count, by: 2) {
+            var cells: [NSView] = []
+            for j in i..<min(i + 2, roles.count) {
+                let (role, displayName) = roles[j]
+                let popup = makePopup(["Default (palette)"]
+                                        + Theme.accentNames.map(Theme.accentDisplayName),
+                                      action: #selector(syntaxAccentChanged(_:)))
+                popup.identifier = NSUserInterfaceItemIdentifier(role)
+                if let accent = currentAccent(for: role),
+                   let idx = Theme.accentNames.firstIndex(of: accent) {
+                    popup.selectItem(at: idx + 1)
+                } else {
+                    popup.selectItem(at: 0)
+                }
+                popup.translatesAutoresizingMaskIntoConstraints = false
+                popup.widthAnchor.constraint(equalToConstant: 170).isActive = true
+                cells.append(label(displayName))
+                cells.append(popup)
+                syntaxPopups[role] = popup
+            }
+            grid.addRow(with: cells)
         }
 
         let resetButton = NSButton(title: "Reset colors to palette", target: self,
@@ -352,19 +363,18 @@ final class SettingsWindowController: NSWindowController {
         let info = label("""
         Modal editing in the editor and Flash Mode:
 
-        Esc              normal mode
-        i / a / I / A     insert (A = end of line, O = above, o = below)
+        Esc               normal mode
+        i / I / a / A     insert: after cursor / line start / after char / line end
         o / O             new line below / above
-        h j k l w b e     cursor motions
+        h j k l / w b e   cursor / word motions
         0 ^ $             line start / first non-blank / line end
-        gg G {n}G         document / nth line
-        v                 visual mode (select with motions)
-        x X D C           delete char / line-to-end / change to line end
-        dd yy p P         delete / yank / paste line
-        cw dw d$ y$       change / delete / yank with a motion
+        gg / G / \\{n}G    document start / end / nth line
+        v                 visual mode — move to select, then y / d
+        x / X             delete char under / before cursor
+        D / C             delete / change to end of line
+        dd / yy / p / P   delete / yank line, paste after / before
+        cw / dw / d$ / y$ change / delete / yank with a motion
         u                 undo (⌘Z also works)
-
-        Mode is shown in the line-number gutter.
         """, size: 12)
         info.maximumNumberOfLines = 0
         info.lineBreakMode = .byWordWrapping
@@ -421,11 +431,30 @@ final class SettingsWindowController: NSWindowController {
         }
     }
 
-    @objc private func syntaxColorChanged(_ sender: NSColorWell) {
+    @objc private func syntaxAccentChanged(_ sender: NSPopUpButton) {
         guard let role = sender.identifier?.rawValue else { return }
         var overrides = settings.syntaxOverrides
-        overrides[role] = SettingsWindowController.hex(sender.color)
+        let idx = sender.indexOfSelectedItem
+        if idx <= 0 {
+            overrides.removeValue(forKey: role)
+        } else if idx - 1 < Theme.accentNames.count {
+            overrides[role] = Theme.accentNames[idx - 1]
+        }
         settings.syntaxOverrides = overrides
+    }
+
+    /// The accent currently applied to a role (nil = palette default).
+    private func currentAccent(for role: String) -> String? {
+        guard let override = settings.syntaxOverride(for: role) else { return nil }
+        if Theme.accentNames.contains(override) { return override }
+        // A legacy absolute-hex override: match it to an accent if it is one.
+        let lower = override.lowercased()
+        for name in Theme.accentNames {
+            if let hex = Theme.palette.color(name), hex.lowercased() == lower {
+                return name
+            }
+        }
+        return nil
     }
 
     @objc private func resetColors(_ sender: Any?) {
@@ -436,8 +465,8 @@ final class SettingsWindowController: NSWindowController {
         backgroundOverrideWell.isEnabled = false
         backgroundOverrideWell.color = Theme.editorBackground
         refreshLineIndicatorWell()
-        for (role, well) in syntaxWells {
-            well.color = Theme.c(role, overrideKey: role)
+        for (role, popup) in syntaxPopups {
+            popup.selectItem(at: 0)
         }
     }
 

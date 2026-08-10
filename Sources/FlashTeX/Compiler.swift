@@ -33,6 +33,12 @@ struct LatexReport {
     let engineMessage: String
     let errors: [LatexIssue]
     let elapsedMs: Int64
+    /// Engine that produced this report (may differ from the requested one
+    /// after a silent LuaTeX fallback).
+    let engineName: String
+    /// True when the engine reported a memory/capacity failure (surfaced so
+    /// the caller knows a memory-override retry is worthwhile).
+    let capacityError: Bool
 }
 
 final class Compiler {
@@ -42,11 +48,28 @@ final class Compiler {
     var onStatusStarted: (() -> Void)?
     var onFinished: ((LatexReport) -> Void)?
 
+    private static let compiledBeforeKey = "FlashTeX.HasCompiledBefore"
+
     private var debounce: Timer?
     private let lock = NSLock()
     private var currentProcess: Process?
     private var lastBuildDir: URL?
     private let generation = AtomicInt(0)
+    /// Build dir reused across compiles so TeX's .aux/.toc/.out survive between
+    /// runs — that's what makes the reference/TOC passes incremental instead
+    /// of re-deriving everything from scratch each time.
+    private var persistentBuildDir: URL?
+    /// The source of the most recent request — consulted at pass time to
+    /// decide whether `-shell-escape` should be granted.
+    private var currentSource: String?
+    /// True until the first successful engine run. TeX's first run rebuilds
+    /// the kpathsea/font caches and can take minutes, so first runs get a much
+    /// more generous watchdog than steady-state compiles.
+    private var firstRun = !UserDefaults.standard.bool(forKey: compiledBeforeKey)
+
+    init() {
+        sweepStaleBuildDirs()
+    }
 
     // MARK: - Public API
 
@@ -57,6 +80,7 @@ final class Compiler {
     /// the first edit or a paste.
     func scheduleCompile(source: String) {
         debounce?.invalidate()
+        currentSource = source
         let delay = max(0.01, SettingsStore.shared.renderDebounceMs / 1000.0)
         let t = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
             self?.compile(source: source)
@@ -68,6 +92,7 @@ final class Compiler {
     /// Compile immediately, bypassing the debounce (Cmd+R, on open).
     func compileNow(source: String) {
         debounce?.invalidate()
+        currentSource = source
         compile(source: source)
     }
 
@@ -76,10 +101,24 @@ final class Compiler {
         lock.lock()
         let proc = currentProcess
         currentProcess = nil
-        let dir = lastBuildDir
+        let dirs = Set<URL?>([lastBuildDir, persistentBuildDir])
         lastBuildDir = nil
+        persistentBuildDir = nil
         lock.unlock()
         if let proc, proc.isRunning { proc.terminate() }
+        for case let dir? in dirs {
+            try? FileManager.default.removeItem(at: dir)
+        }
+    }
+
+    /// Drop the incremental state when the document is replaced (new/open), so
+    /// stale reference data from a previous document can never leak in.
+    func resetIncrementalState() {
+        lock.lock()
+        let dir = persistentBuildDir
+        persistentBuildDir = nil
+        lastBuildDir = nil
+        lock.unlock()
         if let dir { try? FileManager.default.removeItem(at: dir) }
     }
 
@@ -104,26 +143,60 @@ final class Compiler {
         }
     }
 
-    private func runCompile(source: String, generation gen: Int) {
+    private func runCompile(source rawSource: String, generation gen: Int) {
+        let source = sanitizeSource(rawSource)
+
+        // The fallback ladder: (1) normal run, (2) the same engine with far
+        // larger TeX memory pools when a capacity error is reported, (3) LuaTeX
+        // — whose pools are dynamically allocated — as the last resort.
+        var outcome = runPipeline(source: source, engineName: engine, gen: gen,
+                                  memoryOverride: false)
+        if let r = outcome, !r.success, r.capacityError, r.engineName != "lualatex" {
+            outcome = runPipeline(source: source, engineName: engine, gen: gen,
+                                  memoryOverride: true)
+        }
+        if let r = outcome, !r.success, r.capacityError,
+           r.engineName != "lualatex", TeX.findExecutable("lualatex") != nil {
+            outcome = runPipeline(source: source, engineName: "lualatex", gen: gen,
+                                  memoryOverride: false)
+        }
+    }
+
+    private func runPipeline(source: String, engineName: String, gen: Int,
+                             memoryOverride: Bool) -> LatexReport? {
         let start = Date()
 
-        guard let buildDir = makeBuildDir() else {
+        // Reuse the persistent build dir when one exists so TeX's reference
+        // files (.aux/.toc/.out) carry over between compiles — incremental
+        // compilation. It is only (re)created on the first run or after the
+        // document changes.
+        let buildDir: URL
+        if let existing = persistentBuildDir {
+            buildDir = existing
+        } else if let fresh = makeBuildDir() {
+            persistentBuildDir = fresh
+            buildDir = fresh
+        } else {
             deliverFailure("Could not create a temporary workspace.", gen: gen)
-            return
+            return nil
         }
+
         let texURL = buildDir.appendingPathComponent("document.tex")
         do {
             try source.write(to: texURL, atomically: true, encoding: .utf8)
         } catch {
             deliverFailure("Could not write the temporary document: \(error.localizedDescription)", gen: gen)
             cleanup(buildDir)
-            return
+            persistentBuildDir = nil
+            return nil
         }
 
-        guard let engineURL = engineExecutableURL() else {
-            deliverFailure("Could not find `\(engine)` on your PATH.\nInstall MacTeX or BasicTeX, then try again.", gen: gen)
-            cleanup(buildDir)
-            return
+        guard let engineURL = engineExecutableURL(engineName) else {
+            deliverFailure("Could not find `\(engineName)` on your PATH.\n"
+                           + "Install MacTeX from https://www.tug.org/mactex/ (or BasicTeX), then try again.\n"
+                           + "If it is installed but not on this path, add its bin directory (usually\n"
+                           + "/Library/TeX/texbin) to the PATH used to launch FlashTeX.", gen: gen)
+            return nil
         }
 
         // Documents without \label/\ref/\tableofcontents/Asymptote render in a
@@ -137,7 +210,8 @@ final class Compiler {
             // Pass 1 (draft mode skips the PDF — faster). `-shell-escape` lets
             // TeX itself invoke `asy` for \begin{asy} blocks, writing the
             // figure PDFs into this build dir.
-            let pass1 = runSinglePass(engineURL: engineURL, buildDir: buildDir, draftMode: true)
+            let pass1 = runSinglePass(engineURL: engineURL, buildDir: buildDir,
+                                      draftMode: true, memoryOverride: memoryOverride)
             ok = pass1.ok
             engineOutput = pass1.output
             // Explicit fallback: run `asy` ourselves so restricted shell-escape
@@ -147,24 +221,28 @@ final class Compiler {
             // Pass 2 writes the final PDF; a third pass only runs if references
             // moved (or an asy figure first appeared in this pass).
             if ok {
-                let pass2 = runSinglePass(engineURL: engineURL, buildDir: buildDir, draftMode: false)
+                let pass2 = runSinglePass(engineURL: engineURL, buildDir: buildDir,
+                                          draftMode: false, memoryOverride: memoryOverride)
                 ok = pass2.ok
                 engineOutput = pass2.output
             }
             if ok && referenceHash(buildDir) != refsAfter1 {
-                let pass3 = runSinglePass(engineURL: engineURL, buildDir: buildDir, draftMode: false)
+                let pass3 = runSinglePass(engineURL: engineURL, buildDir: buildDir,
+                                          draftMode: false, memoryOverride: memoryOverride)
                 ok = pass3.ok
                 engineOutput = pass3.output
             }
         } else {
-            let pass1 = runSinglePass(engineURL: engineURL, buildDir: buildDir, draftMode: false)
+            let pass1 = runSinglePass(engineURL: engineURL, buildDir: buildDir,
+                                      draftMode: false, memoryOverride: memoryOverride)
             ok = pass1.ok
             engineOutput = pass1.output
             // Documents with \begin{asy} pulled in via \input — or whose .asy
             // assets only materialise during compilation — need a quick second
             // pass so PDFKit gets the rendered figures immediately.
             if ok && asyWasInvolved(buildDir: buildDir) {
-                let pass2 = runSinglePass(engineURL: engineURL, buildDir: buildDir, draftMode: false)
+                let pass2 = runSinglePass(engineURL: engineURL, buildDir: buildDir,
+                                          draftMode: false, memoryOverride: memoryOverride)
                 ok = pass2.ok
                 engineOutput = pass2.output
             }
@@ -185,29 +263,40 @@ final class Compiler {
         }
         let pdfSize = (try? FileManager.default.attributesOfItem(atPath: pdfURL.path)[.size] as? Int) ?? 0
         let success = ok && pdfSize > 0
+        let capacity = logContainsCapacityError(log)
 
-        if generation.load() == gen {
-            if success {
-                lock.lock()
-                if let old = lastBuildDir, old != buildDir {
-                    try? FileManager.default.removeItem(at: old)
-                }
-                lastBuildDir = buildDir
-                lock.unlock()
-            } else {
-                cleanup(buildDir)
-            }
-            let report = LatexReport(success: success,
-                                     pdfURL: success ? pdfURL : nil,
-                                     engineMessage: success ? "Rendered in \(elapsedMs) ms" : "Compilation failed.",
-                                     errors: errors,
-                                     elapsedMs: elapsedMs)
-            DispatchQueue.main.async { [weak self] in
-                self?.onFinished?(report)
-            }
-        } else {
-            cleanup(buildDir)   // superseded by a newer request — drop it
+        guard generation.load() == gen else {
+            return nil   // superseded by a newer request — build dir is reused
         }
+
+        if success {
+            lock.lock()
+            if let old = lastBuildDir, old != buildDir {
+                try? FileManager.default.removeItem(at: old)
+            }
+            lastBuildDir = buildDir
+            lock.unlock()
+            if firstRun {
+                firstRun = false
+                UserDefaults.standard.set(true, forKey: Compiler.compiledBeforeKey)
+            }
+        }
+        // On failure the persistent dir is deliberately kept: the engine's
+        // .aux/.toc survive for the next attempt, which keeps reference-heavy
+        // documents compiling incrementally even while they're broken.
+        let engineTag = memoryOverride ? "\(engineName) +memory" : engineName
+        let report = LatexReport(success: success,
+                                 pdfURL: success ? pdfURL : nil,
+                                 engineMessage: success ? "Rendered in \(elapsedMs) ms (\(engineTag))"
+                                                        : "Compilation failed (\(engineTag)).",
+                                 errors: errors,
+                                 elapsedMs: elapsedMs,
+                                 engineName: engineName,
+                                 capacityError: capacity)
+        DispatchQueue.main.async { [weak self] in
+            self?.onFinished?(report)
+        }
+        return report
     }
 
     /// Run one `engine` pass over document.tex in the build directory.
@@ -215,7 +304,8 @@ final class Compiler {
     /// Returns whether the engine exited cleanly and a PDF was produced, plus
     /// the captured stdout/stderr (for diagnosing wedged or dying runs).
     private func runSinglePass(engineURL: URL, buildDir: URL,
-                               draftMode: Bool = false) -> (ok: Bool, output: String) {
+                               draftMode: Bool = false,
+                               memoryOverride: Bool = false) -> (ok: Bool, output: String) {
         let process = Process()
         process.executableURL = engineURL
         process.currentDirectoryURL = buildDir
@@ -223,11 +313,22 @@ final class Compiler {
         // `-shell-escape` can find `asy` (and kpsewhich finds class files).
         process.environment = TeX.environment()
 
-        var args = ["-shell-escape",
-                    "-interaction=nonstopmode",
+        var args = ["-interaction=nonstopmode",
                     "-halt-on-error",
                     "-file-line-error",
                     "-synctex=1"]
+        // `-shell-escape` is only granted when the source actually uses it
+        // (write18, Asymptote, runsystem) — the default otherwise stays off so
+        // documents can't run arbitrary shell commands just by mentioning TeX.
+        if needsShellEscape() { args.append("-shell-escape") }
+        // A capacity error gets a second chance with much larger TeX pools.
+        if memoryOverride {
+            args += ["-extra-mem-top=4000000",
+                     "-extra-mem-bot=4000000",
+                     "-pool-size=8000000",
+                     "-hash-size=30000",
+                     "-max-strings=200000"]
+        }
         if draftMode { args.append("-draftmode") }
         args.append("document.tex")
         process.arguments = args
@@ -260,6 +361,7 @@ final class Compiler {
 
         let sema = DispatchSemaphore(value: 0)
         var exitCode: Int32 = -1
+        var timedOut = false
         process.terminationHandler = { proc in
             exitCode = proc.terminationStatus
             sema.signal()
@@ -274,12 +376,22 @@ final class Compiler {
             return (false, "")
         }
 
-        // Watchdog — never let a runaway engine wedge the app.
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 25) {
-            if process.isRunning { process.terminate() }
+        // Watchdog — never let a runaway engine wedge the app. The very first
+        // engine run rebuilds TeX's font/kpathsea caches and can legitimately
+        // take minutes, so it gets a much longer leash than steady-state runs.
+        let timeout: TimeInterval = firstRun ? 240 : 45
+        let watchdog = DispatchWorkItem { [weak process] in
+            guard let process else { return }
+            if process.isRunning {
+                timedOut = true
+                process.terminate()
+            }
         }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout,
+                                                       execute: watchdog)
 
         sema.wait()
+        watchdog.cancel()
         ioGroup.wait()
 
         lock.lock()
@@ -291,7 +403,7 @@ final class Compiler {
         let output = String(data: stdout.isEmpty ? stderr : stdout, encoding: .utf8) ?? ""
         // Draft passes never write the PDF by design, so they can't be judged
         // by its presence — only by the engine's exit code.
-        let ok = exitCode == 0 && (draftMode || pdfSize > 0)
+        let ok = exitCode == 0 && (draftMode || pdfSize > 0) && !timedOut
         return (ok, output)
     }
 
@@ -374,10 +486,63 @@ final class Compiler {
 
     private func deliverFailure(_ message: String, gen: Int) {
         let report = LatexReport(success: false, pdfURL: nil, engineMessage: message,
-                                 errors: [], elapsedMs: 0)
+                                 errors: [], elapsedMs: 0, engineName: engine,
+                                 capacityError: false)
         guard generation.load() == gen else { return }
         DispatchQueue.main.async { [weak self] in
             self?.onFinished?(report)
+        }
+    }
+
+    // MARK: - Input sanitization & engine tuning
+
+    /// Normalize hostile/legacy input before it reaches the engine: CRLF and
+    /// lone CR become LF, a leading BOM is dropped, NUL bytes are removed
+    /// (they'd silently truncate the file in C-string lands) and whitespace-only
+    /// garbage is trimmed at the edges.
+    private func sanitizeSource(_ source: String) -> String {
+        var s = source.replacingOccurrences(of: "\r\n", with: "\n")
+                      .replacingOccurrences(of: "\r", with: "\n")
+                      .replacingOccurrences(of: "\0", with: "")
+        if s.first == "\u{FEFF}" { s.removeFirst() }
+        return s
+    }
+
+    /// True when the source asks the engine to execute external commands, in
+    /// which case `-shell-escape` is granted. Everything else compiles with
+    /// restricted \write18 — the safer default.
+    private func needsShellEscape() -> Bool {
+        guard let current = currentSource else { return false }
+        let markers = ["\\write18", "\\begin{asy}", "runsystem", "\\immediate\\write18"]
+        return markers.contains { current.contains($0) }
+    }
+
+    /// Memory/capacity failure signatures in the engine log — the trigger for
+    /// the memory-override retry and the LuaTeX fallback.
+    private func logContainsCapacityError(_ log: String) -> Bool {
+        let signatures = ["TeX capacity exceeded", "Memory overflow",
+                          "Not enough memory", "insufficient memory",
+                          "No room for a new", "main memory"]
+        return signatures.contains { log.contains($0) }
+    }
+
+    /// Remove leftover `flashtex-*` build directories from crashed sessions.
+    /// Only stale ones (older than an hour) are touched so a build dir the
+    /// preview is currently showing is never deleted out from under it.
+    private func sweepStaleBuildDirs() {
+        let fm = FileManager.default
+        let temp = fm.temporaryDirectory
+        DispatchQueue.global(qos: .utility).async {
+            guard let names = try? fm.contentsOfDirectory(atPath: temp.path) else { return }
+            let cutoff = Date().addingTimeInterval(-3600)
+            for name in names where name.hasPrefix("flashtex-") {
+                let url = temp.appendingPathComponent(name)
+                let created = (try? fm.attributesOfItem(atPath: url.path)[.creationDate] as? Date)
+                    ?? Date.distantPast
+                if created < cutoff {
+                    try? fm.removeItem(at: url)
+                }
+            }
         }
     }
 
@@ -398,11 +563,17 @@ final class Compiler {
         try? FileManager.default.removeItem(at: url)
     }
 
-    private func engineExecutableURL() -> URL? {
-        TeX.findExecutable(engine)
+    private func engineExecutableURL(_ engineName: String) -> URL? {
+        TeX.findExecutable(engineName)
     }
 
     // MARK: - Log parsing
+
+    /// Lines that look like problems but are advisory (warnings, summaries).
+    private func isNoiseLine(_ message: String) -> Bool {
+        message.contains("Warning:") || message.contains("rerun to get")
+            || message.contains("Rerun to get")
+    }
 
     private func parseLog(_ log: String) -> [LatexIssue] {
         var issues: [LatexIssue] = []
@@ -442,6 +613,9 @@ final class Compiler {
                 if let m = fileLineRe.firstMatch(in: t, range: NSRange(location: 0, length: ns.length)) {
                     let line = Int(ns.substring(with: m.range(at: 1))) ?? -1
                     let msg = ns.substring(with: m.range(at: 2)).trimmingCharacters(in: .whitespaces)
+                    // Advisory warnings aren't compile errors — drop them so the
+                    // error list stays focused on things that actually fail.
+                    if isNoiseLine(msg) { continue }
                     issues.append(LatexIssue(line: line, message: msg, context: "", hint: ""))
                 }
                 continue

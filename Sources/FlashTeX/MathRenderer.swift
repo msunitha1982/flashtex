@@ -33,10 +33,14 @@ final class MathRenderer {
     private let cache = NSCache<NSString, NSImage>()
     private let cgCache = NSCache<NSString, CGImage>()
     private let pdfCache = NSCache<NSString, PDFDocument>()
-    private let work = DispatchQueue(label: "flashtex.math", qos: .userInitiated)
 
-    /// Keys of the most recently cached renders (diagnostics).
-    private(set) var debugKeys: [String] = []
+    /// Concurrent rendering queue: each equation launches its own pdflatex, so
+    /// several can run at once. A semaphore caps the burst so a document full
+    /// of equations doesn't saturate the CPU (startup, not rasterization, is
+    /// the dominant cost — overlapping N process launches is the win).
+    private let work = DispatchQueue(label: "flashtex.math", qos: .userInitiated,
+                                     attributes: .concurrent)
+    private let renderSlots = DispatchSemaphore(value: 3)
 
     init() {
         cache.countLimit = 256
@@ -100,13 +104,14 @@ final class MathRenderer {
         }
         work.async { [weak self] in
             guard let self else { return }
+            self.renderSlots.wait()
+            defer { self.renderSlots.signal() }
             var image: NSImage?
             if let (rendered, cg, pdf) = self._render(math, display: display, colorHex: hex) {
                 image = rendered
                 self.cache.setObject(rendered, forKey: key as NSString)
                 self.cgCache.setObject(cg, forKey: key as NSString)
                 self.pdfCache.setObject(pdf, forKey: key as NSString)
-                self.debugKeys.append(key)
             }
             DispatchQueue.main.async { completion(image) }
         }

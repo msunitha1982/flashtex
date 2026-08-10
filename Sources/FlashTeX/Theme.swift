@@ -20,16 +20,47 @@ enum Theme {
         CatppuccinPalette.load(settings.flavor)
     }
 
-    /// Colour for a Catppuccin role, honouring per-role syntax overrides.
+    /// The 14 Catppuccin accents (palette order) offered in the syntax
+    /// colour pickers. Values are palette role names, not hexes, so a chosen
+    /// accent tracks the active flavour.
+    static let accentNames = [
+        "rosewater", "flamingo", "pink", "mauve", "red", "maroon",
+        "peach", "yellow", "green", "teal", "sky", "sapphire", "blue", "lavender",
+    ]
+
+    static func accentDisplayName(_ name: String) -> String {
+        name.capitalized
+    }
+
+    /// Resolve a palette role for the current mode. Catppuccin's `overlay`
+    /// tones are for muted UI chrome, not text — in light mode they're far too
+    /// faint against `base`, so text roles use the readable `subtext0` instead.
+    /// Orange (peach) is also avoided for default syntax in light mode.
+    private static func roleForMode(_ role: String) -> String {
+        guard !settings.isDarkMode else { return role }
+        switch role {
+        case "overlay0", "overlay1", "overlay2": return "subtext0"
+        case "peach": return "sapphire"
+        default: return role
+        }
+    }
+
+    /// Colour for a Catppuccin role, honouring per-role overrides. An override
+    /// is either a palette accent name (e.g. "rosewater") or an absolute
+    /// "RRGGBB" hex.
     static func c(_ role: String, overrideKey: String? = nil) -> NSColor {
-        if let key = overrideKey, let hex = settings.syntaxOverride(for: key) {
-            return nsColor(from: hex) ?? nsColor(role)
+        if let key = overrideKey, let override = settings.syntaxOverride(for: key) {
+            if accentNames.contains(override),
+               let accentHex = palette.color(override),
+               let c = nsColor(from: accentHex) { return c }
+            if let c = nsColor(from: override) { return c }
         }
         return nsColor(role)
     }
 
     static func nsColor(_ role: String) -> NSColor {
-        guard let hex = palette.color(role) else {
+        let resolved = roleForMode(role)
+        guard let hex = palette.color(resolved) else {
             return NSColor.labelColor
         }
         return nsColor(from: hex) ?? NSColor.labelColor

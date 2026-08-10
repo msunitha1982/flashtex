@@ -12,8 +12,9 @@ import PDFKit
 final class PreviewView: NSView {
 
     let pdfView = PDFView()
-    private let pageLabel = NSTextField(labelWithString: "—")
     private var pageObserver: NSObjectProtocol?
+    private var keepPage = 0
+    private var keepPointInPage = CGPoint.zero
 
     /// Horizontal inset between the page and the pane edge.
     private let pageInset: CGFloat = 20
@@ -41,19 +42,8 @@ final class PreviewView: NSView {
             pdfView.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
 
-        pageLabel.font = Theme.gutterFont
-        pageLabel.textColor = Theme.secondaryText
-        pageLabel.alignment = .right
-        pageLabel.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(pageLabel)
-        NSLayoutConstraint.activate([
-            pageLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            pageLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
-        ])
-
         pageObserver = NotificationCenter.default.addObserver(
             forName: .PDFViewPageChanged, object: pdfView, queue: .main) { [weak self] _ in
-            self?.updatePageLabel()
             self?.rescaleToFit()
         }
     }
@@ -67,18 +57,25 @@ final class PreviewView: NSView {
 
     func load(pdfURL: URL) {
         guard let doc = PDFDocument(url: pdfURL) else { return }
-        let keep = currentPageIndex()
+        // Remember where the reader was: page index + the exact point on that
+        // page (in page space), so a compile that reflows the document lands
+        // them back on the same page/spot instead of page one.
+        keepPage = currentPageIndex()
+        keepPointInPage = pdfView.currentDestination?.point ?? .zero
         pdfView.document = doc
-        if keep < doc.pageCount, let page = doc.page(at: keep) {
-            pdfView.go(to: page)
-        }
         rescaleToFit()
-        updatePageLabel()
+        // `go(to:)` right after swapping the document doesn't stick (PDFKit
+        // hasn't laid the pages out yet, and rescaling resets the scroll), so
+        // navigate on the next run-loop turn.
+        guard keepPage < doc.pageCount, let page = doc.page(at: keepPage) else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pdfView.go(to: PDFDestination(page: page, at: self.keepPointInPage))
+        }
     }
 
     func clear() {
         pdfView.document = nil
-        updatePageLabel()
     }
 
     /// Fit the current page's width to the pane, clamped to sane bounds.
@@ -106,13 +103,5 @@ final class PreviewView: NSView {
     private func currentPageIndex() -> Int {
         guard let doc = pdfView.document, let page = pdfView.currentPage else { return 0 }
         return doc.index(for: page)
-    }
-
-    private func updatePageLabel() {
-        guard let doc = pdfView.document, let page = pdfView.currentPage else {
-            pageLabel.stringValue = "—"
-            return
-        }
-        pageLabel.stringValue = "\(doc.index(for: page) + 1) / \(doc.pageCount)"
     }
 }

@@ -25,6 +25,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
         self.controller = controller
+
+        // First-run setup check: no TeX engine installed means nothing can be
+        // compiled — point the user at a guided install rather than leaving
+        // them to discover it via a cryptic status message.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard TeX.enginesAvailable() == false else { return }
+            DispatchQueue.main.async {
+                self?.presentMissingTeXAlert()
+            }
+        }
+    }
+
+    private func presentMissingTeXAlert() {
+        guard let window = controller?.window else { return }
+        let alert = NSAlert()
+        alert.messageText = "TeX engine not found"
+        alert.informativeText = """
+        FlashTeX compiles LaTeX documents with a local TeX engine, but no \
+        engine (pdflatex / xelatex / lualatex) could be found on this Mac.
+
+        Install MacTeX from tug.org/mactex/ (large but complete) or BasicTeX \
+        for a smaller setup, then relaunch FlashTeX. If you already installed \
+        one, make sure its bin directory (usually /Library/TeX/texbin) is on \
+        the PATH used to launch FlashTeX.
+        """
+        alert.addButton(withTitle: "Open MacTeX Page")
+        alert.addButton(withTitle: "Later")
+        if let url = URL(string: "https://www.tug.org/mactex/"),
+           alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(url)
+        }
+        _ = window
     }
 
     /// Lock the app-wide appearance to the user's setting so native controls

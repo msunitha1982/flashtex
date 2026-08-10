@@ -182,7 +182,8 @@ final class SettingsStore {
         set { set(newValue, .backgroundHex) }
     }
 
-    /// Syntax colour overrides keyed by role (e.g. "command", "math").
+    /// Syntax colour overrides keyed by role (e.g. "command", "math"). Values
+    /// are Catppuccin accent names (e.g. "rosewater") or absolute hex.
     var syntaxOverrides: [String: String] {
         get { defaults.dictionary(forKey: Key.syntaxOverrides.rawValue) as? [String: String] ?? [:] }
         set { set(newValue, .syntaxOverrides) }
