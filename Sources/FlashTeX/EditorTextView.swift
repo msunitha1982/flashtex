@@ -113,7 +113,12 @@ final class EditorTextView: VimTextView {
     }
 
     // =====================================================================
-    //  Painting — background, current line, gutter, then glyphs
+    //  Painting — background, current line, then glyphs
+    //
+    //  The line-number strip is owned by GutterView (a sibling view in the
+    //  scroll view). Drawing it here would be clipped: NSTextView is
+    //  layer-backed, so content outside a redraw's dirty rect is discarded,
+    //  and typing/scroll/caret redraws only dirty the text column.
     // =====================================================================
 
     override func draw(_ dirtyRect: NSRect) {
@@ -122,15 +127,14 @@ final class EditorTextView: VimTextView {
 
         drawCurrentLineHighlight(in: dirtyRect)
         super.draw(dirtyRect)          // glyphs + selection (background off)
-        drawGutter(in: dirtyRect)
     }
 
     private func drawCurrentLineHighlight(in dirtyRect: NSRect) {
         let insertion = selectedRange().location
         guard insertion != NSNotFound,
-              let lm = layoutManager, let tc = textContainer else { return }
+              let lm = layoutManager else { return }
         let glyphIndex = lm.glyphIndexForCharacter(at: insertion)
-        guard glyphIndex != NSNotFound else { return }
+        guard glyphIndex != NSNotFound, glyphIndex < lm.numberOfGlyphs else { return }
         // The line-fragment rect is the full line box (centred on the text
         // line, exactly one line tall) — the glyph bounding rect of the
         // insertion point is a stub that can sit at the wrong height and bleed
@@ -142,51 +146,12 @@ final class EditorTextView: VimTextView {
         NSRect(x: 0, y: lineRect.minY, width: bounds.width, height: lineRect.height).fill()
     }
 
-    private func drawGutter(in dirtyRect: NSRect) {
-        let mode = SettingsStore.shared.gutterMode
-        guard mode != .none else { return }
+    /// Told when the gutter needs a repaint (text edits that change the line
+    /// count or layout). The gutter view is refreshed through this instead of
+    /// the text view redrawing it.
+    var onGutterRefresh: (() -> Void)?
 
-        Theme.gutterBackground.setFill()
-        NSRect(x: 0, y: dirtyRect.minY, width: gutterWidth(), height: dirtyRect.height).fill()
-
-        guard let lm = layoutManager, let tc = textContainer else { return }
-        let ns = string as NSString
-        let origin = textContainerOrigin
-        // layout-manager APIs speak in text-container coordinates.
-        let containerRect = dirtyRect.offsetBy(dx: -origin.x, dy: -origin.y)
-        let visible = lm.glyphRange(forBoundingRect: containerRect, in: tc)
-        guard visible.location != NSNotFound else { return }
-        let attrs: [NSAttributedString.Key: Any] = [.font: Theme.gutterFont,
-                                                    .foregroundColor: Theme.gutterText]
-
-        lm.enumerateLineFragments(forGlyphRange: visible) { [weak self] fragRect, _, _, glyphRange, _ in
-            guard let self = self else { return }
-            let rect = fragRect.offsetBy(dx: origin.x, dy: origin.y)
-            let charLoc = lm.characterIndexForGlyph(at: glyphRange.location)
-            let isLineStart = charLoc == 0 || ns.character(at: charLoc - 1) == 10
-            guard isLineStart else { return }      // wrapped continuation lines share a number
-            let text = self.lineNumberText(at: charLoc)
-            guard !text.isEmpty else { return }
-            let size = (text as NSString).size(withAttributes: attrs)
-            let x = self.gutterWidth() - size.width - 8
-            let y = rect.minY + (rect.height - size.height) / 2
-            (text as NSString).draw(at: NSPoint(x: x, y: y), withAttributes: attrs)
-        }
-
-        // Vim mode indicator in the corner of the gutter.
-        if SettingsStore.shared.vimMode {
-            let badgeAttrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .bold),
-                .foregroundColor: Theme.accent,
-            ]
-            let text = vim.modeLabel as NSString
-            let size = text.size(withAttributes: badgeAttrs)
-            text.draw(at: NSPoint(x: 6, y: dirtyRect.maxY - size.height - 6),
-                      withAttributes: badgeAttrs)
-        }
-    }
-
-    private func lineNumberText(at charIndex: Int) -> String {
+    func lineNumberText(at charIndex: Int) -> String {
         let mode = SettingsStore.shared.gutterMode
         switch mode {
         case .none: return ""
@@ -199,7 +164,7 @@ final class EditorTextView: VimTextView {
         }
     }
 
-    private func lineNumber(at charIndex: Int) -> Int {
+    func lineNumber(at charIndex: Int) -> Int {
         let ns = string as NSString
         var line = 1
         var i = 0
@@ -236,6 +201,7 @@ final class EditorTextView: VimTextView {
             updateColumnLayout()
         }
         needsDisplay = true
+        onGutterRefresh?()
     }
 
     /// Text column layout: either full-width, or a centred fixed-width column

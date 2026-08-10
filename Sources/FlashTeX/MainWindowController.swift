@@ -32,6 +32,7 @@ final class MainWindowController: NSWindowController {
 
     private weak var enginePopup: NSPopUpButton?
     private weak var autoSwitch: NSSwitch?
+    private var gutterView: GutterView?
 
     // Compile status bar — deliberately lives outside the toolbar so collapse-
     // ing the toolbar can never hide the fact that a compile is running (or
@@ -161,6 +162,13 @@ final class MainWindowController: NSWindowController {
         scrollView.drawsBackground = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(scrollView)
+
+        // The line-number strip is a dedicated view so its drawing is never
+        // clipped by the text view's layer (see GutterView).
+        gutterView = GutterView(editor: editor, scrollView: scrollView)
+        editor.onGutterRefresh = { [weak self] in
+            self?.gutterView?.refresh()
+        }
 
         NSLayoutConstraint.activate([
             scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
