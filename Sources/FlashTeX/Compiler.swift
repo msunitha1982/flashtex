@@ -50,13 +50,15 @@ final class Compiler {
 
     // MARK: - Public API
 
-    /// Reset the 400 ms debounce; the actual compile fires on the timer.
-    /// The timer runs in `.common` mode so it still fires while the run loop is
-    /// tracking an event (typing, scrolling) — a default-mode timer can be
-    /// starved and "auto-compile" appears to miss the first edit or a paste.
+    /// Reset the debounce (default 400 ms, from the Flash preferences); the
+    /// actual compile fires on the timer. The timer runs in `.common` mode so it
+    /// still fires while the run loop is tracking an event (typing, scrolling) —
+    /// a default-mode timer can be starved and "auto-compile" appears to miss
+    /// the first edit or a paste.
     func scheduleCompile(source: String) {
         debounce?.invalidate()
-        let t = Timer(timeInterval: 0.4, repeats: false) { [weak self] _ in
+        let delay = max(0.01, SettingsStore.shared.renderDebounceMs / 1000.0)
+        let t = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
             self?.compile(source: source)
         }
         debounce = t

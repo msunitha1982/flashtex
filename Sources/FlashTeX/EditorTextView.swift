@@ -11,7 +11,7 @@ import AppKit
 // It paints its own background so the editor colour adapts to the system
 // appearance, and reports edits to the controller through callbacks.
 
-final class EditorTextView: NSTextView {
+final class EditorTextView: VimTextView {
 
     var onTextChanged: (() -> Void)?
     var onCursorMoved: (() -> Void)?
@@ -20,6 +20,7 @@ final class EditorTextView: NSTextView {
 
     private let padding: CGFloat = 20
     private var gutterDigits = 3
+    private var settingsObserver: NSObjectProtocol?
 
     static func makeEditor() -> EditorTextView {
         let storage = NSTextStorage()
@@ -62,10 +63,6 @@ final class EditorTextView: NSTextView {
         minSize = NSSize(width: 0, height: 0)
         maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
 
-        font = Theme.editorFont
-        textColor = Theme.editorText
-        insertionPointColor = Theme.accent
-
         usesFindBar = true
         isIncrementalSearchingEnabled = true
         allowsUndo = true
@@ -77,7 +74,42 @@ final class EditorTextView: NSTextView {
         isGrammarCheckingEnabled = false
         isContinuousSpellCheckingEnabled = false
 
+        applySettings()
+
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: SettingsStore.changedNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                self?.applySettings()
+            }
+    }
+
+    /// Re-apply everything that depends on the current settings: font family,
+    /// colours, line height, ligatures, column layout and gutter mode.
+    func applySettings() {
+        let font = Theme.editorFont
+        self.font = font
+        textColor = Theme.editorText
+        insertionPointColor = Theme.accent
+
+        let ligature: Int = SettingsStore.shared.ligatures ? 1 : 0
+        let para = NSMutableParagraphStyle()
+        para.minimumLineHeight = Theme.lineHeight(forFont: font)
+
+        let len = (string as NSString).length
+        if let storage = textStorage, len > 0 {
+            storage.beginEditing()
+            storage.addAttribute(.paragraphStyle, value: para, range: NSRange(location: 0, length: len))
+            storage.addAttribute(.ligature, value: ligature, range: NSRange(location: 0, length: len))
+            storage.endEditing()
+        }
+        defaultParagraphStyle = para
+        typingAttributes[.font] = font
+        typingAttributes[.paragraphStyle] = para
+        typingAttributes[.ligature] = ligature
+
         updateGutter()
+        updateColumnLayout()
+        needsDisplay = true
     }
 
     // =====================================================================
@@ -109,6 +141,9 @@ final class EditorTextView: NSTextView {
     }
 
     private func drawGutter(in dirtyRect: NSRect) {
+        let mode = SettingsStore.shared.gutterMode
+        guard mode != .none else { return }
+
         Theme.gutterBackground.setFill()
         NSRect(x: 0, y: dirtyRect.minY, width: gutterWidth(), height: dirtyRect.height).fill()
 
@@ -128,11 +163,37 @@ final class EditorTextView: NSTextView {
             let charLoc = lm.characterIndexForGlyph(at: glyphRange.location)
             let isLineStart = charLoc == 0 || ns.character(at: charLoc - 1) == 10
             guard isLineStart else { return }      // wrapped continuation lines share a number
-            let text = "\(self.lineNumber(at: charLoc))"
+            let text = self.lineNumberText(at: charLoc)
+            guard !text.isEmpty else { return }
             let size = (text as NSString).size(withAttributes: attrs)
             let x = self.gutterWidth() - size.width - 8
             let y = rect.minY + (rect.height - size.height) / 2
             (text as NSString).draw(at: NSPoint(x: x, y: y), withAttributes: attrs)
+        }
+
+        // Vim mode indicator in the corner of the gutter.
+        if SettingsStore.shared.vimMode {
+            let badgeAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .bold),
+                .foregroundColor: Theme.accent,
+            ]
+            let text = vim.modeLabel as NSString
+            let size = text.size(withAttributes: badgeAttrs)
+            text.draw(at: NSPoint(x: 6, y: dirtyRect.maxY - size.height - 6),
+                      withAttributes: badgeAttrs)
+        }
+    }
+
+    private func lineNumberText(at charIndex: Int) -> String {
+        let mode = SettingsStore.shared.gutterMode
+        switch mode {
+        case .none: return ""
+        case .absolute: return "\(lineNumber(at: charIndex))"
+        case .relative:
+            let caretLine = lineNumber(at: selectedRange().location)
+            let thisLine = lineNumber(at: charIndex)
+            if thisLine == caretLine { return "0" }
+            return "\(abs(thisLine - caretLine))"
         }
     }
 
@@ -160,6 +221,7 @@ final class EditorTextView: NSTextView {
     }
 
     func gutterWidth() -> CGFloat {
+        guard SettingsStore.shared.gutterMode != .none else { return 0 }
         let digits = max(2, String(lineCount()).count)
         let digitW = ("9" as NSString).size(withAttributes: [.font: Theme.gutterFont]).width
         return 12 + digitW * CGFloat(digits) + 12
@@ -169,8 +231,29 @@ final class EditorTextView: NSTextView {
         let newDigits = max(2, String(lineCount()).count)
         if newDigits != gutterDigits {
             gutterDigits = newDigits
-            textContainerInset = NSSize(width: gutterWidth() + padding, height: padding)
+            updateColumnLayout()
         }
+        needsDisplay = true
+    }
+
+    /// Text column layout: either full-width, or a centred fixed-width column
+    /// (e.g. 80 characters) when the user enables a max column width.
+    func updateColumnLayout() {
+        guard let tc = textContainer else { return }
+        let chars = SettingsStore.shared.maxColumnChars
+        if chars > 0 {
+            tc.widthTracksTextView = false
+            let charW = ("0" as NSString).size(withAttributes: [.font: font ?? Theme.editorFont]).width
+            let column = charW * CGFloat(chars)
+            tc.containerSize = NSSize(width: max(column, 200),
+                                      height: CGFloat.greatestFiniteMagnitude)
+        } else {
+            tc.widthTracksTextView = true
+            tc.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                                      height: CGFloat.greatestFiniteMagnitude)
+        }
+        textContainerInset = NSSize(width: gutterWidth() + padding, height: padding)
+        needsLayout = true
         needsDisplay = true
     }
 

@@ -20,7 +20,7 @@ import AppKit
 // (`font.pointSize / MathRenderer.renderPointSize`). Display blocks are drawn
 // centred on their paragraph.
 
-final class MathFoldingTextView: NSTextView {
+final class MathFoldingTextView: VimTextView {
 
     var foldEnabled = true {
         didSet { refreshFolds() }
@@ -29,6 +29,7 @@ final class MathFoldingTextView: NSTextView {
     private let parser = MathFoldParser()
     private var mathBlocks: [MathBlock] = []
     private var activeBlock: MathBlock?
+    private var hoverBlock: MathBlock?
     private var appliedHiddenRanges: [NSRange] = []
     private var pendingKeys: Set<String> = []
     private var unrenderableKeys: Set<String> = []
@@ -37,6 +38,8 @@ final class MathFoldingTextView: NSTextView {
     /// True while a fold pass is mutating the storage (permanent kern
     /// attributes). Prevents `didChangeText` feedback loops.
     private var isUpdatingFolds = false
+    private var settingsObserver: NSObjectProtocol?
+    private var trackingArea: NSTrackingArea?
 
     /// Flash Mode zoom — independent of the main editor's font size.
     private(set) var zoomScale: CGFloat = 1
@@ -91,10 +94,6 @@ final class MathFoldingTextView: NSTextView {
                          height: CGFloat.greatestFiniteMagnitude)
         textContainerInset = NSSize(width: 16, height: 12)
 
-        font = Theme.editorFont
-        textColor = Theme.editorText
-        insertionPointColor = Theme.accent
-
         allowsUndo = true
         smartInsertDeleteEnabled = false
         isAutomaticQuoteSubstitutionEnabled = false
@@ -103,6 +102,56 @@ final class MathFoldingTextView: NSTextView {
         isAutomaticSpellingCorrectionEnabled = false
         isGrammarCheckingEnabled = false
         isContinuousSpellCheckingEnabled = false
+
+        applySettings()
+
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: SettingsStore.changedNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                self?.applySettings()
+            }
+    }
+
+    /// Re-apply fonts, colours, line height and ligatures from settings, then
+    /// re-fold. Math is re-tinted by clearing the render cache.
+    func applySettings() {
+        let font = Theme.editorFont(ofSize: Theme.editorFontSize * zoomScale)
+        self.font = font
+        textColor = Theme.editorText
+        insertionPointColor = Theme.accent
+        backgroundColor = Theme.editorBackground
+
+        let ligature: Int = SettingsStore.shared.ligatures ? 1 : 0
+        let para = NSMutableParagraphStyle()
+        para.minimumLineHeight = Theme.lineHeight(forFont: font)
+
+        let len = (string as NSString).length
+        if let storage = textStorage, len > 0 {
+            storage.beginEditing()
+            storage.addAttribute(.paragraphStyle, value: para, range: NSRange(location: 0, length: len))
+            storage.addAttribute(.ligature, value: ligature, range: NSRange(location: 0, length: len))
+            storage.endEditing()
+        }
+        defaultParagraphStyle = para
+        typingAttributes[.font] = font
+        typingAttributes[.paragraphStyle] = para
+        typingAttributes[.ligature] = ligature
+
+        MathRenderer.shared.clearCache()
+        unrenderableKeys.removeAll()
+        refreshFolds()
+        needsDisplay = true
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let ta = trackingArea { removeTrackingArea(ta) }
+        let ta = NSTrackingArea(rect: .zero,
+                                options: [.mouseMoved, .mouseEnteredAndExited,
+                                          .activeInKeyWindow, .inVisibleRect],
+                                owner: self, userInfo: nil)
+        addTrackingArea(ta)
+        trackingArea = ta
     }
 
     func shutdown() {
@@ -122,12 +171,22 @@ final class MathFoldingTextView: NSTextView {
 
     private func scheduleRefresh() {
         refreshTimer?.invalidate()
-        let t = Timer(timeInterval: 0.03, repeats: false) { [weak self] _ in
+        let delay = max(0.01, SettingsStore.shared.renderDebounceMs / 1000.0)
+        let t = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
             self?.refreshFolds()
         }
         refreshTimer = t
         // `.common` so the fold refresh also runs while typing/scroll tracking.
         RunLoop.main.add(t, forMode: .common)
+    }
+
+    /// Which block should stay unfolded right now, per the unfold trigger.
+    private func computeActiveBlock() -> MathBlock? {
+        let caret = selectedRange().location
+        switch SettingsStore.shared.unfoldTrigger {
+        case .hover: return hoverBlock
+        case .click, .caret: return parser.activeBlock(at: caret, in: mathBlocks)
+        }
     }
 
     /// Re-scan the buffer, figure out which block the caret sits in, hide the
@@ -142,9 +201,8 @@ final class MathFoldingTextView: NSTextView {
         }
 
         let text = string as NSString
-        let caret = selectedRange().location
         mathBlocks = parser.mathBlocks(in: text)
-        activeBlock = parser.activeBlock(at: caret, in: mathBlocks)
+        activeBlock = computeActiveBlock()
         textSnapshot = text as String
         applyHiddenAttributes()
         needsDisplay = true
@@ -303,6 +361,19 @@ final class MathFoldingTextView: NSTextView {
                                   y: rect.midY - imageSize.height / 2,
                                   width: imageSize.width,
                                   height: imageSize.height)
+
+            // Chip behind the rendered math (Obsidian-style). The chip hugs
+            // the image; padding and corner radius come from settings.
+            if SettingsStore.shared.chipFill == .solid {
+                let pad = SettingsStore.shared.chipPadding
+                let chipRect = drawRect.insetBy(dx: -pad, dy: -pad)
+                let radius = SettingsStore.shared.chipRadius
+                let path = NSBezierPath(roundedRect: chipRect,
+                                        xRadius: radius, yRadius: radius)
+                Theme.mathFoldBackground.setFill()
+                path.fill()
+            }
+
             if ProcessInfo.processInfo.environment["FLASHTEX_DEBUG_DRAW"] != nil {
                 print("  scaled=\(imageSize) drawRect=\(drawRect) containerCenter=\(textContainerOrigin.x + tc.size.width / 2)")
             }
@@ -348,11 +419,13 @@ final class MathFoldingTextView: NSTextView {
 
     /// Editor font size relative to the fixed TeX size the math was rendered
     /// at. Math is rendered at `MathRenderer.renderPointSize`; scaling the
-    /// image by this factor matches the equation's x-height to the text.
+    /// image by this factor matches the equation's x-height to the text. The
+    /// user's math scale factor (Flash preferences) applies on top.
     private var fontScaling: CGFloat {
         guard let font else { return 1 }
         let base = MathRenderer.renderPointSize
-        return base > 0 ? font.pointSize / base : 1
+        guard base > 0 else { return 1 }
+        return (font.pointSize / base) * SettingsStore.shared.mathScale
     }
 
     // MARK: - Zoom (independent of the main editor)
@@ -363,8 +436,7 @@ final class MathFoldingTextView: NSTextView {
 
     private func setZoomScale(_ newScale: CGFloat) {
         zoomScale = min(max(newScale, minZoomScale), maxZoomScale)
-        let newFont = NSFont.monospacedSystemFont(ofSize: Theme.editorFontSize * zoomScale,
-                                                  weight: .regular)
+        let newFont = Theme.editorFont(ofSize: Theme.editorFontSize * zoomScale)
         font = newFont
         if let storage = textStorage {
             storage.beginEditing()
@@ -404,6 +476,10 @@ final class MathFoldingTextView: NSTextView {
         if foldEnabled {
             let point = convert(event.locationInWindow, from: nil)
             if let range = foldedRange(at: point) {
+                if SettingsStore.shared.unfoldTrigger == .hover {
+                    // Unfold-on-hover: the clicked block becomes the hovered one.
+                    hoverBlock = mathBlocks.first { $0.range.location == range.location }
+                }
                 let text = string as NSString
                 let inner = NSRange(location: min(range.location + 1, text.length), length: 0)
                 setSelectedRange(inner)
@@ -433,6 +509,29 @@ final class MathFoldingTextView: NSTextView {
             if rect.insetBy(dx: -3, dy: -2).contains(point) { return range }
         }
         return nil
+    }
+
+    /// Unfold-on-hover: keep the block under the mouse visible so the caret can
+    /// land in it. Changing the hovered block re-folds the previous one.
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        guard foldEnabled, SettingsStore.shared.unfoldTrigger == .hover else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        let block = foldedRange(at: point).flatMap { range in
+            mathBlocks.first { $0.range.location == range.location }
+        }
+        if block?.range.location != hoverBlock?.range.location {
+            hoverBlock = block
+            scheduleRefresh()
+        }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        guard foldEnabled, SettingsStore.shared.unfoldTrigger == .hover,
+              hoverBlock != nil else { return }
+        hoverBlock = nil
+        scheduleRefresh()
     }
 
     // MARK: - Notifications

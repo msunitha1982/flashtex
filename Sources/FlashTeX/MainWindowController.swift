@@ -21,10 +21,10 @@ final class MainWindowController: NSWindowController {
     private var currentFileURL: URL?
     private var autoCompile = true
     private var isLoading = false
-    private var isFlashActive = false
     private var lastPdfURL: URL?
     private var currentErrors: [LatexIssue] = []
     private var scrollObserver: NSObjectProtocol?
+    private var settingsObserver: NSObjectProtocol?
     private var errorSheet: NSWindow?
     private var flashController: FlashWindowController?
     private var isCompiling = false
@@ -102,6 +102,16 @@ final class MainWindowController: NSWindowController {
                                                scrollView: self.scrollView)
             }
 
+        // Settings changes re-tint the editor's syntax colours (the editor
+        // itself re-applies fonts/geometry via its own observer).
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: SettingsStore.changedNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                guard let self else { return }
+                self.highlighter.rehighlightNow(editor: self.editor,
+                                                scrollView: self.scrollView)
+            }
+
         vc.view = container
         vc.onLayout = { [weak self] in
             guard let self else { return }
@@ -172,7 +182,7 @@ final class MainWindowController: NSWindowController {
             self.window?.isDocumentEdited = true
             self.highlighter.scheduleRehighlight(editor: self.editor,
                                                  scrollView: self.scrollView)
-            if self.autoCompile && !self.isFlashActive {
+            if self.autoCompile {
                 self.compiler.scheduleCompile(source: self.editor.string)
             }
         }
@@ -323,7 +333,6 @@ final class MainWindowController: NSWindowController {
         showMainWindow()
         let fc = FlashWindowController()
         flashController = fc
-        isFlashActive = true
         fc.showWindow(nil)
         fc.window?.makeKeyAndOrderFront(nil)
         fc.focusEditor()
@@ -566,6 +575,9 @@ final class MainWindowController: NSWindowController {
         highlighter.shutdown()
         if let scrollObserver {
             NotificationCenter.default.removeObserver(scrollObserver)
+        }
+        if let settingsObserver {
+            NotificationCenter.default.removeObserver(settingsObserver)
         }
         flashController?.shutdown()
     }
@@ -813,7 +825,6 @@ extension MainWindowController: NSWindowDelegate {
         guard let win = notification.object as? NSWindow else { return }
         if let fc = flashController, win === fc.window {
             flashController = nil
-            isFlashActive = false
             if !editor.string.isEmpty {
                 compiler.compileNow(source: editor.string)
             }
