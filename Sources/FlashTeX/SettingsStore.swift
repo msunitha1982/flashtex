@@ -97,10 +97,15 @@ final class SettingsStore {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        // v1 stored the dark-mode indicator hex as the default for every mode;
+        // "" now means "follow the flavour's default for the current mode".
+        if defaults.string(forKey: Key.lineIndicatorHex.rawValue) == "2A2F41" {
+            defaults.set("", forKey: Key.lineIndicatorHex.rawValue)
+        }
         let initial: [String: Any] = [
             Key.appearanceMode.rawValue: AppearanceMode.light.rawValue,
             Key.flavor.rawValue: Flavor.latte.rawValue,
-            Key.lineIndicatorHex.rawValue: "2A2F41",
+            Key.lineIndicatorHex.rawValue: "",
             Key.backgroundHex.rawValue: "",
             Key.syntaxOverrides.rawValue: [:],
             Key.fontFamily.rawValue: "",
@@ -164,9 +169,10 @@ final class SettingsStore {
         }
     }
 
-    /// Line indicator (current line) colour as "RRGGBB".
+    /// Line indicator (current line) colour as "RRGGBB". "" means "follow the
+    /// mode-aware default" (see `Theme.currentLine`).
     var lineIndicatorHex: String {
-        get { let v = string(.lineIndicatorHex); return v.isEmpty ? "2A2F41" : v }
+        get { string(.lineIndicatorHex) }
         set { set(newValue, .lineIndicatorHex) }
     }
 

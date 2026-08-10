@@ -8,6 +8,10 @@ import AppKit
 
 final class SettingsWindowController: NSWindowController {
 
+    /// Strong reference — `present()`'s controller is otherwise released as
+    /// soon as the method returns and the window would go blank/close.
+    private static var current: SettingsWindowController?
+
     private let settings = SettingsStore.shared
 
     private var flavourPopup: NSPopUpButton!
@@ -38,12 +42,19 @@ final class SettingsWindowController: NSWindowController {
     private var vimCheck: NSButton!
 
     static func present() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 480),
-                              styleMask: [.titled, .closable],
-                              backing: .buffered, defer: false)
-        window.title = "FlashTeX Settings"
-        window.isReleasedWhenClosed = false
-        let controller = SettingsWindowController(window: window)
+        let controller: SettingsWindowController
+        if let existing = current {
+            controller = existing
+        } else {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 480),
+                                  styleMask: [.titled, .closable],
+                                  backing: .buffered, defer: false)
+            window.title = "FlashTeX Settings"
+            window.isReleasedWhenClosed = false
+            controller = SettingsWindowController(window: window)
+            controller.window?.delegate = controller
+            current = controller
+        }
         NSApp.activate(ignoringOtherApps: true)
         controller.showWindow(nil)
         controller.window?.center()
@@ -52,14 +63,14 @@ final class SettingsWindowController: NSWindowController {
 
     override init(window: NSWindow?) {
         super.init(window: window)
+        buildContent()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     // MARK: - Assembly
 
-    override func windowDidLoad() {
-        super.windowDidLoad()
+    private func buildContent() {
         guard let window else { return }
 
         let tabs = NSTabView(frame: NSRect(x: 0, y: 0, width: 560, height: 440))
@@ -150,8 +161,7 @@ final class SettingsWindowController: NSWindowController {
         appearanceSegment.widthAnchor.constraint(equalToConstant: 180).isActive = true
 
         lineIndicatorWell = NSColorWell()
-        lineIndicatorWell.color = Theme.nsColor(from: settings.lineIndicatorHex)
-            ?? Theme.editorText
+        lineIndicatorWell.color = Theme.currentLine
         lineIndicatorWell.target = self
         lineIndicatorWell.action = #selector(lineIndicatorChanged(_:))
         lineIndicatorWell.translatesAutoresizingMaskIntoConstraints = false
@@ -376,6 +386,7 @@ final class SettingsWindowController: NSWindowController {
               sender.indexOfSelectedItem < flavors.count else { return }
         settings.flavor = flavors[sender.indexOfSelectedItem]
         appearanceSegment.selectedSegment = settings.isDarkMode ? 1 : 0
+        refreshLineIndicatorWell()
     }
 
     @objc private func appearanceChanged(_ sender: NSSegmentedControl) {
@@ -383,6 +394,13 @@ final class SettingsWindowController: NSWindowController {
         if let idx = SettingsStore.Flavor.allCases.firstIndex(of: settings.flavor) {
             flavourPopup.selectItem(at: idx)
         }
+        refreshLineIndicatorWell()
+    }
+
+    /// The colour well follows the mode-aware default unless the user has set a
+    /// custom override.
+    private func refreshLineIndicatorWell() {
+        lineIndicatorWell.color = Theme.currentLine
     }
 
     @objc private func lineIndicatorChanged(_ sender: NSColorWell) {
@@ -412,12 +430,12 @@ final class SettingsWindowController: NSWindowController {
 
     @objc private func resetColors(_ sender: Any?) {
         settings.backgroundHex = ""
-        settings.lineIndicatorHex = "2A2F41"
+        settings.lineIndicatorHex = ""
         settings.syntaxOverrides = [:]
         backgroundUsePalette.state = .on
         backgroundOverrideWell.isEnabled = false
         backgroundOverrideWell.color = Theme.editorBackground
-        lineIndicatorWell.color = Theme.nsColor(from: "2A2F41")!
+        refreshLineIndicatorWell()
         for (role, well) in syntaxWells {
             well.color = Theme.c(role, overrideKey: role)
         }
@@ -501,6 +519,12 @@ final class SettingsWindowController: NSWindowController {
         let g = Int((c.greenComponent * 255).rounded())
         let b = Int((c.blueComponent * 255).rounded())
         return String(format: "%02X%02X%02X", r, g, b)
+    }
+}
+
+extension SettingsWindowController: NSWindowDelegate {
+    func windowWillClose(_ notification: Notification) {
+        if Self.current === self { Self.current = nil }
     }
 }
 

@@ -103,9 +103,20 @@ enum Theme {
     static var secondaryText: NSColor { nsColor("overlay2") }
     static var separator: NSColor { nsColor("surface1") }
 
-    /// Current-line highlight — user-customisable, default `#2A2F41`.
+    /// Mode-aware current-line highlight. The two modes get visibly different
+    /// tints (a soft gray on light Catppuccin, a deep gray on dark), drawn at
+    /// partial opacity so the line is only hinted at, never painted solid.
     static var currentLine: NSColor {
-        nsColor(from: settings.lineIndicatorHex) ?? nsColor("blue").withAlphaComponent(0.14)
+        let hex = settings.lineIndicatorHex.isEmpty ? defaultCurrentLineHex
+                                                    : settings.lineIndicatorHex
+        let base = nsColor(from: hex) ?? nsColor("blue")
+        let alpha: CGFloat = settings.isDarkMode ? 0.5 : 0.45
+        return base.withAlphaComponent(alpha)
+    }
+
+    /// Per-mode default line-indicator tint when the user hasn't overridden it.
+    static var defaultCurrentLineHex: String {
+        settings.isDarkMode ? "2A2F41" : "C4C8D3"
     }
 
     static var flashBlockBackground: NSColor {
