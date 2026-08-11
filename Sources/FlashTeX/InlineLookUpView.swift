@@ -5,14 +5,26 @@ import AppKit
 public struct InlineLookUpPanel: View {
     let title: String
     let text: String
+    var onDismiss: (() -> Void)?
     
-    public init(title: String, text: String) {
+    public init(title: String, text: String, onDismiss: (() -> Void)? = nil) {
         self.title = title
         self.text = text
+        self.onDismiss = onDismiss
     }
     
     public var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 8) {
+            if let onDismiss = onDismiss {
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(Color(NSColor.tertiaryLabelColor))
+                }
+                .buttonStyle(.plain)
+                .help("Dismiss popup")
+            }
+            
             Text(title)
                 .font(.subheadline.weight(.semibold))
                 .foregroundColor(Color(NSColor.labelColor))
@@ -25,9 +37,9 @@ public struct InlineLookUpPanel: View {
                 .foregroundColor(Color(NSColor.secondaryLabelColor))
                 .lineLimit(2)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .fixedSize() // Crucial: Keeps it tight and horizontal
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .fixedSize()
     }
 }
 

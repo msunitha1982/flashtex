@@ -215,7 +215,7 @@ final class EditorTextView: VimTextView {
     // MARK: - Inline Error Diagnostics
 
     private(set) var diagnostics: [Int: LatexIssue] = [:]
-    private var trackingArea: NSTrackingArea?
+    private var dismissedLines = Set<Int>()
 
     func updateDiagnostics(_ issues: [LatexIssue]) {
         var newMap: [Int: LatexIssue] = [:]
@@ -223,6 +223,7 @@ final class EditorTextView: VimTextView {
             newMap[issue.line] = issue
         }
         diagnostics = newMap
+        dismissedLines.removeAll()
 
         guard let storage = textStorage else { return }
         let fullRange = NSRange(location: 0, length: storage.length)
@@ -241,6 +242,7 @@ final class EditorTextView: VimTextView {
         }
         storage.endEditing()
         updateGutter()
+        updateInlinePopover()
     }
 
     func lineRange(forLine line: Int) -> NSRange {
@@ -251,31 +253,33 @@ final class EditorTextView: VimTextView {
         return NSRange(location: start, length: max(0, end - start))
     }
 
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let trackingArea { removeTrackingArea(trackingArea) }
-        let area = NSTrackingArea(rect: bounds, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: nil)
-        addTrackingArea(area)
-        trackingArea = area
-    }
-
-    override func mouseMoved(with event: NSEvent) {
-        super.mouseMoved(with: event)
-        let pt = convert(event.locationInWindow, from: nil)
-        guard let lm = layoutManager, let tc = textContainer else { return }
-        let glyphIdx = lm.glyphIndex(for: pt, in: tc)
-        guard glyphIdx != NSNotFound else {
+    func updateInlinePopover() {
+        guard let lm = layoutManager else {
             InlineLookUpPopover.dismiss()
             return
         }
-        let charIdx = lm.characterIndexForGlyph(at: glyphIdx)
+        let charIdx = selectedRange().location
         let line = lineNumber(at: charIdx)
-        if let issue = diagnostics[line] {
-            let lineRect = lm.lineFragmentRect(forGlyphAt: glyphIdx, effectiveRange: nil)
-                .offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
+
+        if let issue = diagnostics[line], !dismissedLines.contains(line) {
+            let lineR = lineRange(forLine: line)
+            let glyphIdx = lm.glyphIndexForCharacter(at: lineR.location)
+            guard glyphIdx != NSNotFound else { return }
+            let lineFrag = lm.lineFragmentRect(forGlyphAt: glyphIdx, effectiveRange: nil)
+            
+            // Anchor popover to a small 20pt rect at the start of the line rather than the full editor width
+            let anchorRect = NSRect(x: textContainerOrigin.x + lineFrag.minX + 8,
+                                    y: textContainerOrigin.y + lineFrag.minY,
+                                    width: 20,
+                                    height: lineFrag.height)
+            
             let title = issue.message.localizedCaseInsensitiveContains("warning") ? "TeX Warning (Line \(line))" : "TeX Error (Line \(line))"
             let text = issue.message + (issue.hint.isEmpty ? "" : " — " + issue.hint)
-            InlineLookUpPopover.show(title: title, text: text, relativeTo: lineRect, of: self)
+            
+            InlineLookUpPopover.show(title: title, text: text, relativeTo: anchorRect, of: self) { [weak self] in
+                self?.dismissedLines.insert(line)
+                self?.updateInlinePopover()
+            }
         } else {
             InlineLookUpPopover.dismiss()
         }
@@ -390,6 +394,7 @@ final class EditorTextView: VimTextView {
         super.setSelectedRange(charRange, affinity: affinity, stillSelecting: stillSelecting)
         needsDisplay = true
         onCursorMoved?()
+        updateInlinePopover()
     }
 
     override func didChangeText() {
@@ -407,13 +412,16 @@ final class EditorTextView: VimTextView {
 public enum InlineLookUpPopover {
     private static var activePopover: NSPopover?
 
-    public static func show(title: String, text: String, relativeTo rect: NSRect, of view: NSView, preferredEdge: NSRectEdge = .maxY) {
+    public static func show(title: String, text: String, relativeTo rect: NSRect, of view: NSView, preferredEdge: NSRectEdge = .maxY, onDismiss: (() -> Void)? = nil) {
         dismiss()
 
         let popover = NSPopover()
         popover.behavior = .transient
         popover.animates = true
-        let content = InlineLookUpPanel(title: title, text: text)
+        let content = InlineLookUpPanel(title: title, text: text, onDismiss: {
+            onDismiss?()
+            dismiss()
+        })
         let hosting = NSHostingController(rootView: content)
         popover.contentViewController = hosting
         popover.show(relativeTo: rect, of: view, preferredEdge: preferredEdge)
