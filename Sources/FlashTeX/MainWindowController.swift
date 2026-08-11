@@ -501,6 +501,10 @@ final class MainWindowController: NSWindowController {
         }
     }
 
+    @objc func showCommandPalette(_ sender: Any?) {
+        CommandPaletteWindowController.show(onEditor: editor)
+    }
+
     @discardableResult
     @objc func saveDocument() -> Bool {
         if let url = currentFileURL {

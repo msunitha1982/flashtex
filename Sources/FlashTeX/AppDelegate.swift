@@ -140,6 +140,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
         editMenu.addItem(.separator())
 
+        let cmdPalette = NSMenuItem(title: "Command Palette / Symbol Search…", action: #selector(MainWindowController.showCommandPalette(_:)), keyEquivalent: "P")
+        cmdPalette.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(cmdPalette)
+
+        let cmdK = NSMenuItem(title: "Command Palette…", action: #selector(MainWindowController.showCommandPalette(_:)), keyEquivalent: "k")
+        cmdK.keyEquivalentModifierMask = [.command]
+        editMenu.addItem(cmdK)
+
+        editMenu.addItem(.separator())
+
         let findItem = NSMenuItem(title: "Find", action: nil, keyEquivalent: "")
         let findMenu = NSMenu(title: "Find")
         for (title, key, tag) in [("Find…", "f", NSTextFinder.Action.showFindInterface.rawValue),

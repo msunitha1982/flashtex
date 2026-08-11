@@ -337,6 +337,23 @@ final class EditorTextView: VimTextView {
         scrollRangeToVisible(target)
     }
 
+    @objc func showCommandPalette(_ sender: Any?) {
+        CommandPaletteWindowController.show(onEditor: self)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags == .command && event.charactersIgnoringModifiers == "k" {
+            CommandPaletteWindowController.show(onEditor: self)
+            return true
+        }
+        if flags == [.command, .shift] && event.charactersIgnoringModifiers?.lowercased() == "p" {
+            CommandPaletteWindowController.show(onEditor: self)
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
     // =====================================================================
     //  Font zoom (responder-chain: the View menu routes ⌘=/⌘-/⌘0 here when
     //  this editor is the first responder)
