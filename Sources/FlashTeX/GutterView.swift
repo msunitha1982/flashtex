@@ -74,7 +74,8 @@ final class GutterView: NSView {
                                                     .foregroundColor: Theme.gutterText]
         let width = editor.gutterWidth()
         let editorFont = editor.font ?? Theme.editorFont
-        let baselineOffset = editorFont.ascender - Theme.gutterFont.ascender
+        let baselineDiff = editorFont.ascender - Theme.gutterFont.ascender
+        let fontLineHeight = lm.defaultLineHeight(for: editorFont)
 
         lm.enumerateLineFragments(forGlyphRange: visible) { fragRect, _, _, glyphRange, _ in
             let rect = fragRect.offsetBy(dx: origin.x, dy: origin.y)
@@ -85,7 +86,10 @@ final class GutterView: NSView {
             guard !text.isEmpty else { return }
             let size = (text as NSString).size(withAttributes: attrs)
             let x = width - size.width - 8
-            let y = rect.minY + baselineOffset
+            
+            // Align gutter font baseline exactly with editor font baseline inside fragment
+            let lineCenterOffset = max(0, (fragRect.height - fontLineHeight) / 2)
+            let y = rect.minY + baselineDiff + lineCenterOffset
             (text as NSString).draw(at: NSPoint(x: x, y: y), withAttributes: attrs)
         }
 

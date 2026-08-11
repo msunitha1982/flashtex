@@ -3,6 +3,13 @@ import AppKit
 
 // MARK: - Palette Data Models
 
+// MARK: - Custom Panel that allows key window status for borderless window
+
+final class CommandPalettePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
 public struct PaletteItem: Identifiable, Hashable {
     public let id = UUID()
     public let title: String
@@ -18,6 +25,37 @@ public struct PaletteItem: Identifiable, Hashable {
 
     public static func == (lhs: PaletteItem, rhs: PaletteItem) -> Bool {
         lhs.title == rhs.title && lhs.category == rhs.category
+    }
+
+    public func fuzzyScore(query: String) -> Double? {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if q.isEmpty { return 1.0 }
+
+        let t = title.lowercased()
+        let s = subtitle.lowercased()
+        let c = category.lowercased()
+
+        if t.hasPrefix(q) { return 1.0 }
+        if t.contains(q) { return 0.85 }
+        if c.hasPrefix(q) || s.hasPrefix(q) { return 0.75 }
+        if c.contains(q) || s.contains(q) || insertText.lowercased().contains(q) { return 0.65 }
+
+        if isSubsequence(q, in: t) { return 0.5 }
+        if isSubsequence(q, in: s) || isSubsequence(q, in: c) { return 0.3 }
+
+        return nil
+    }
+
+    private func isSubsequence(_ sub: String, in str: String) -> Bool {
+        var subIdx = sub.startIndex
+        var strIdx = str.startIndex
+        while subIdx < sub.endIndex && strIdx < str.endIndex {
+            if sub[subIdx] == str[strIdx] {
+                subIdx = sub.index(after: subIdx)
+            }
+            strIdx = str.index(after: strIdx)
+        }
+        return subIdx == sub.endIndex
     }
 }
 
@@ -106,13 +144,13 @@ public struct CommandPaletteView: View {
         if query.trimmingCharacters(in: .whitespaces).isEmpty {
             return CommandPaletteStore.items
         }
-        let q = query.lowercased()
-        return CommandPaletteStore.items.filter {
-            $0.title.lowercased().contains(q) ||
-            $0.subtitle.lowercased().contains(q) ||
-            $0.category.lowercased().contains(q) ||
-            $0.insertText.lowercased().contains(q)
-        }
+        return CommandPaletteStore.items
+            .compactMap { item -> (PaletteItem, Double)? in
+                guard let score = item.fuzzyScore(query: query) else { return nil }
+                return (item, score)
+            }
+            .sorted { $0.1 > $1.1 }
+            .map { $0.0 }
     }
 
     public var body: some View {
@@ -312,7 +350,7 @@ public final class CommandPaletteWindowController: NSWindowController {
     init(editor: EditorTextView) {
         self.targetEditor = editor
 
-        let panel = NSPanel(
+        let panel = CommandPalettePanel(
             contentRect: NSRect(x: 0, y: 0, width: 520, height: 320),
             styleMask: [.borderless],
             backing: .buffered, defer: false)
@@ -349,6 +387,7 @@ public final class CommandPaletteWindowController: NSWindowController {
 
         panel.setFrameOrigin(NSPoint(x: x, y: y))
         panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func insertItem(_ item: PaletteItem) {

@@ -255,7 +255,7 @@ final class EditorTextView: VimTextView {
 
     func updateInlinePopover() {
         guard let lm = layoutManager else {
-            InlineLookUpPopover.dismiss()
+            InlineLookUpPopover.dismiss(force: false)
             return
         }
         let charIdx = selectedRange().location
@@ -263,11 +263,12 @@ final class EditorTextView: VimTextView {
 
         if let issue = diagnostics[line], !dismissedLines.contains(line) {
             let lineR = lineRange(forLine: line)
-            let glyphIdx = lm.glyphIndexForCharacter(at: lineR.location)
+            let charLoc = min(lineR.location, (string as NSString).length)
+            let glyphIdx = lm.glyphIndexForCharacter(at: charLoc)
             guard glyphIdx != NSNotFound else { return }
             let lineFrag = lm.lineFragmentRect(forGlyphAt: glyphIdx, effectiveRange: nil)
             
-            // Anchor popover to a small 20pt rect at the start of the line rather than the full editor width
+            // Anchor popover to a small 20pt rect at the start of the line
             let anchorRect = NSRect(x: textContainerOrigin.x + lineFrag.minX + 8,
                                     y: textContainerOrigin.y + lineFrag.minY,
                                     width: 20,
@@ -276,12 +277,12 @@ final class EditorTextView: VimTextView {
             let title = issue.message.localizedCaseInsensitiveContains("warning") ? "TeX Warning (Line \(line))" : "TeX Error (Line \(line))"
             let text = issue.message + (issue.hint.isEmpty ? "" : " — " + issue.hint)
             
-            InlineLookUpPopover.show(title: title, text: text, relativeTo: anchorRect, of: self) { [weak self] in
+            InlineLookUpPopover.show(title: title, text: text, line: line, relativeTo: anchorRect, of: self) { [weak self] in
                 self?.dismissedLines.insert(line)
-                self?.updateInlinePopover()
+                InlineLookUpPopover.dismiss(force: true)
             }
         } else {
-            InlineLookUpPopover.dismiss()
+            InlineLookUpPopover.dismiss(force: false)
         }
     }
 
@@ -418,6 +419,7 @@ final class EditorTextView: VimTextView {
         invalidateLineStartsCache()
         super.didChangeText()
         updateGutter()
+        InlineLookUpPopover.dismiss(force: false)
         if !isLoading {
             onTextChanged?()
         }
@@ -428,16 +430,31 @@ final class EditorTextView: VimTextView {
 
 public enum InlineLookUpPopover {
     private static var activePopover: NSPopover?
+    private(set) public static var currentLine: Int?
+    public static var isPinned: Bool = false
 
-    public static func show(title: String, text: String, relativeTo rect: NSRect, of view: NSView, preferredEdge: NSRectEdge = .maxY, onDismiss: (() -> Void)? = nil) {
-        dismiss()
+    public static func show(title: String, text: String, line: Int, relativeTo rect: NSRect, of view: NSView, preferredEdge: NSRectEdge = .maxY, onDismiss: (() -> Void)? = nil) {
+        if activePopover != nil && currentLine == line {
+            return
+        }
+        dismiss(force: true)
 
         let popover = NSPopover()
-        popover.behavior = .transient
+        popover.behavior = isPinned ? .applicationDefined : .semitransient
         popover.animates = true
-        let content = InlineLookUpPanel(title: title, text: text, onDismiss: {
+        currentLine = line
+
+        let isPinnedBinding = Binding<Bool>(
+            get: { isPinned },
+            set: { newValue in
+                isPinned = newValue
+                popover.behavior = newValue ? .applicationDefined : .semitransient
+            }
+        )
+
+        let content = InlineLookUpPanel(title: title, text: text, isPinned: isPinnedBinding, onDismiss: {
             onDismiss?()
-            dismiss()
+            dismiss(force: true)
         })
         let hosting = NSHostingController(rootView: content)
         popover.contentViewController = hosting
@@ -445,8 +462,11 @@ public enum InlineLookUpPopover {
         activePopover = popover
     }
 
-    public static func dismiss() {
+    public static func dismiss(force: Bool = false) {
+        if isPinned && !force { return }
         activePopover?.close()
         activePopover = nil
+        currentLine = nil
+        if force { isPinned = false }
     }
 }

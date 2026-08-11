@@ -5,16 +5,28 @@ import AppKit
 public struct InlineLookUpPanel: View {
     let title: String
     let text: String
+    @Binding var isPinned: Bool
     var onDismiss: (() -> Void)?
     
-    public init(title: String, text: String, onDismiss: (() -> Void)? = nil) {
+    public init(title: String, text: String, isPinned: Binding<Bool> = .constant(false), onDismiss: (() -> Void)? = nil) {
         self.title = title
         self.text = text
+        self._isPinned = isPinned
         self.onDismiss = onDismiss
     }
     
     public var body: some View {
         HStack(spacing: 8) {
+            Button(action: {
+                isPinned.toggle()
+            }) {
+                Image(systemName: isPinned ? "pin.fill" : "pin")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(isPinned ? Color(NSColor.controlAccentColor) : Color(NSColor.tertiaryLabelColor))
+            }
+            .buttonStyle(.plain)
+            .help(isPinned ? "Unpin popup" : "Pin popup to screen")
+
             if let onDismiss = onDismiss {
                 Button(action: onDismiss) {
                     Image(systemName: "xmark.circle.fill")
