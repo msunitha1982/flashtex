@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 // EditorTextView — the LaTeX editing surface.
 //
@@ -151,6 +152,29 @@ final class EditorTextView: VimTextView {
     /// the text view redrawing it.
     var onGutterRefresh: (() -> Void)?
 
+    private var lineStartsCache: [Int]?
+
+    func invalidateLineStartsCache() {
+        lineStartsCache = nil
+    }
+
+    private func lineStarts() -> [Int] {
+        if let cache = lineStartsCache { return cache }
+        let ns = string as NSString
+        let len = ns.length
+        var starts = [0]
+        starts.reserveCapacity(max(10, len / 40))
+        var i = 0
+        while i < len {
+            if ns.character(at: i) == 10 {
+                starts.append(i + 1)
+            }
+            i += 1
+        }
+        lineStartsCache = starts
+        return starts
+    }
+
     func lineNumberText(at charIndex: Int) -> String {
         let mode = SettingsStore.shared.gutterMode
         switch mode {
@@ -165,26 +189,96 @@ final class EditorTextView: VimTextView {
     }
 
     func lineNumber(at charIndex: Int) -> Int {
-        let ns = string as NSString
-        var line = 1
-        var i = 0
-        while i < charIndex {
-            if ns.character(at: i) == 10 { line += 1 }
-            i += 1
+        let starts = lineStarts()
+        guard !starts.isEmpty else { return 1 }
+        var low = 0
+        var high = starts.count - 1
+        var result = 0
+        while low <= high {
+            let mid = (low + high) / 2
+            if starts[mid] <= charIndex {
+                result = mid
+                low = mid + 1
+            } else {
+                high = mid - 1
+            }
         }
-        return line
+        return result + 1
     }
 
-    // =====================================================================
-    //  Geometry
-    // =====================================================================
-
     func lineCount() -> Int {
-        guard !string.isEmpty else { return 1 }
         let ns = string as NSString
-        var count = 1
-        for i in 0..<ns.length where ns.character(at: i) == 10 { count += 1 }
-        return count
+        guard ns.length > 0 else { return 1 }
+        return lineStarts().count
+    }
+
+    // MARK: - Inline Error Diagnostics
+
+    private(set) var diagnostics: [Int: LatexIssue] = [:]
+    private var trackingArea: NSTrackingArea?
+
+    func updateDiagnostics(_ issues: [LatexIssue]) {
+        var newMap: [Int: LatexIssue] = [:]
+        for issue in issues where issue.line > 0 {
+            newMap[issue.line] = issue
+        }
+        diagnostics = newMap
+
+        guard let storage = textStorage else { return }
+        let fullRange = NSRange(location: 0, length: storage.length)
+        guard fullRange.length > 0 else { return }
+
+        storage.beginEditing()
+        storage.removeAttribute(.underlineStyle, range: fullRange)
+        storage.removeAttribute(.underlineColor, range: fullRange)
+
+        for (line, issue) in diagnostics {
+            let r = lineRange(forLine: line)
+            guard r.length > 0, NSMaxRange(r) <= storage.length else { continue }
+            let color = issue.message.localizedCaseInsensitiveContains("warning") ? NSColor.systemOrange : NSColor.systemRed
+            storage.addAttribute(.underlineStyle, value: NSUnderlineStyle.patternDot.rawValue | NSUnderlineStyle.single.rawValue, range: r)
+            storage.addAttribute(.underlineColor, value: color, range: r)
+        }
+        storage.endEditing()
+        updateGutter()
+    }
+
+    func lineRange(forLine line: Int) -> NSRange {
+        let starts = lineStarts()
+        guard line >= 1, line <= starts.count else { return NSRange(location: 0, length: 0) }
+        let start = starts[line - 1]
+        let end = line < starts.count ? starts[line] - 1 : (string as NSString).length
+        return NSRange(location: start, length: max(0, end - start))
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        let pt = convert(event.locationInWindow, from: nil)
+        guard let lm = layoutManager, let tc = textContainer else { return }
+        let glyphIdx = lm.glyphIndex(for: pt, in: tc)
+        guard glyphIdx != NSNotFound else {
+            InlineLookUpPopover.dismiss()
+            return
+        }
+        let charIdx = lm.characterIndexForGlyph(at: glyphIdx)
+        let line = lineNumber(at: charIdx)
+        if let issue = diagnostics[line] {
+            let lineRect = lm.lineFragmentRect(forGlyphAt: glyphIdx, effectiveRange: nil)
+                .offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
+            let title = issue.message.localizedCaseInsensitiveContains("warning") ? "TeX Warning (Line \(line))" : "TeX Error (Line \(line))"
+            let text = issue.message + (issue.hint.isEmpty ? "" : " — " + issue.hint)
+            InlineLookUpPopover.show(title: title, text: text, relativeTo: lineRect, of: self)
+        } else {
+            InlineLookUpPopover.dismiss()
+        }
     }
 
     func gutterWidth() -> CGFloat {
@@ -299,10 +393,35 @@ final class EditorTextView: VimTextView {
     }
 
     override func didChangeText() {
+        invalidateLineStartsCache()
         super.didChangeText()
         updateGutter()
         if !isLoading {
             onTextChanged?()
         }
+    }
+}
+
+// MARK: - AppKit Popover Integration Helper
+
+public enum InlineLookUpPopover {
+    private static var activePopover: NSPopover?
+
+    public static func show(title: String, text: String, relativeTo rect: NSRect, of view: NSView, preferredEdge: NSRectEdge = .maxY) {
+        dismiss()
+
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.animates = true
+        let content = InlineLookUpPanel(title: title, text: text)
+        let hosting = NSHostingController(rootView: content)
+        popover.contentViewController = hosting
+        popover.show(relativeTo: rect, of: view, preferredEdge: preferredEdge)
+        activePopover = popover
+    }
+
+    public static func dismiss() {
+        activePopover?.close()
+        activePopover = nil
     }
 }
