@@ -29,19 +29,19 @@ public struct PaletteItem: Identifiable, Hashable {
 
     public func fuzzyScore(query: String) -> Double? {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if q.isEmpty { return 1.0 }
+        if q.isEmpty { return nil }
 
         let t = title.lowercased()
         let s = subtitle.lowercased()
         let c = category.lowercased()
+        let i = insertText.lowercased()
 
-        if t.hasPrefix(q) { return 1.0 }
-        if t.contains(q) { return 0.85 }
-        if c.hasPrefix(q) || s.hasPrefix(q) { return 0.75 }
-        if c.contains(q) || s.contains(q) || insertText.lowercased().contains(q) { return 0.65 }
+        if t.hasPrefix(q) || s.hasPrefix(q) || c.hasPrefix(q) { return 1.0 }
+        if t.contains(q) || s.contains(q) || c.contains(q) || i.contains(q) { return 0.8 }
 
-        if isSubsequence(q, in: t) { return 0.5 }
-        if isSubsequence(q, in: s) || isSubsequence(q, in: c) { return 0.3 }
+        if isSubsequence(q, in: t) || isSubsequence(q, in: s) || isSubsequence(q, in: c) || isSubsequence(q, in: i) {
+            return 0.5
+        }
 
         return nil
     }
@@ -141,15 +141,16 @@ public struct CommandPaletteView: View {
     let onCancel: () -> Void
 
     var filteredItems: [PaletteItem] {
-        if query.trimmingCharacters(in: .whitespaces).isEmpty {
-            return CommandPaletteStore.items
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return []
         }
         return CommandPaletteStore.items
             .compactMap { item -> (PaletteItem, Double)? in
-                guard let score = item.fuzzyScore(query: query) else { return nil }
+                guard let score = item.fuzzyScore(query: trimmed) else { return nil }
                 return (item, score)
             }
-            .sorted { $0.1 > $1.1 }
+            .sorted { $0.0.title.localizedCaseInsensitiveCompare($1.0.title) == .orderedAscending }
             .map { $0.0 }
     }
 
@@ -180,7 +181,18 @@ public struct CommandPaletteView: View {
 
             // Results List
             let items = filteredItems
-            if items.isEmpty {
+            if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 24))
+                        .foregroundColor(Color(NSColor.tertiaryLabelColor))
+                    Text("Type to search LaTeX commands, symbols, or snippets…")
+                        .font(.subheadline)
+                        .foregroundColor(Color(NSColor.secondaryLabelColor))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding()
+            } else if items.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "doc.text.magnifyingglass")
                         .font(.system(size: 24))
@@ -198,24 +210,11 @@ public struct CommandPaletteView: View {
                             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                                 let isSelected = index == selectedIndex
                                 HStack(spacing: 10) {
-                                    Text(item.category.uppercased())
-                                        .font(.system(size: 9, weight: .bold))
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 3)
-                                        .background(isSelected ? Color.white.opacity(0.25) : Color(NSColor.quaternaryLabelColor))
-                                        .foregroundColor(isSelected ? .white : Color(NSColor.secondaryLabelColor))
-                                        .cornerRadius(4)
-
                                     Text(item.title)
                                         .font(.system(size: 13, weight: .semibold))
                                         .foregroundColor(isSelected ? .white : Color(NSColor.labelColor))
 
                                     Spacer()
-
-                                    Text(item.subtitle)
-                                        .font(.system(size: 11, weight: .regular, design: .monospaced))
-                                        .foregroundColor(isSelected ? Color.white.opacity(0.8) : Color(NSColor.secondaryLabelColor))
-                                        .lineLimit(1)
                                 }
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 8)
@@ -340,6 +339,10 @@ public final class CommandPaletteWindowController: NSWindowController {
     private static var instance: CommandPaletteWindowController?
 
     static func show(onEditor editor: EditorTextView) {
+        if let existing = instance {
+            existing.closePalette()
+            return
+        }
         let controller = CommandPaletteWindowController(editor: editor)
         instance = controller
         controller.present()

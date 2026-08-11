@@ -144,10 +144,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         cmdPalette.keyEquivalentModifierMask = [.command, .shift]
         editMenu.addItem(cmdPalette)
 
-        let cmdK = NSMenuItem(title: "Command Palette…", action: #selector(MainWindowController.showCommandPalette(_:)), keyEquivalent: "k")
-        cmdK.keyEquivalentModifierMask = [.command]
-        editMenu.addItem(cmdK)
-
         editMenu.addItem(.separator())
 
         let findItem = NSMenuItem(title: "Find", action: nil, keyEquivalent: "")

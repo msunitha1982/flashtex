@@ -259,16 +259,24 @@ final class EditorTextView: VimTextView {
             return
         }
         let charIdx = selectedRange().location
-        let line = lineNumber(at: charIdx)
+        let currentLine = lineNumber(at: charIdx)
 
-        if let issue = diagnostics[line], !dismissedLines.contains(line) {
+        // Show error for current line if it exists; otherwise fall back to first error line in diagnostics
+        let lineToShow: Int?
+        if diagnostics[currentLine] != nil {
+            lineToShow = currentLine
+        } else {
+            lineToShow = diagnostics.keys.sorted().first
+        }
+
+        if let line = lineToShow, let issue = diagnostics[line], !dismissedLines.contains(line) {
             let lineR = lineRange(forLine: line)
             let charLoc = min(lineR.location, (string as NSString).length)
             let glyphIdx = lm.glyphIndexForCharacter(at: charLoc)
             guard glyphIdx != NSNotFound else { return }
             let lineFrag = lm.lineFragmentRect(forGlyphAt: glyphIdx, effectiveRange: nil)
             
-            // Anchor popover to a small 20pt rect at the start of the line
+            // Anchor popover to a small 20pt rect at the start of the error line
             let anchorRect = NSRect(x: textContainerOrigin.x + lineFrag.minX + 8,
                                     y: textContainerOrigin.y + lineFrag.minY,
                                     width: 20,
@@ -344,10 +352,6 @@ final class EditorTextView: VimTextView {
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if flags == .command && event.charactersIgnoringModifiers == "k" {
-            CommandPaletteWindowController.show(onEditor: self)
-            return true
-        }
         if flags == [.command, .shift] && event.charactersIgnoringModifiers?.lowercased() == "p" {
             CommandPaletteWindowController.show(onEditor: self)
             return true
