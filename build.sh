@@ -29,11 +29,10 @@ cp "$BIN_PATH" "$APP/Contents/MacOS/FlashTeX"
 cp Info.plist "$APP/Contents/Info.plist"
 
 # Bundle the Catppuccin palette so the Appearance settings can load it.
-PALETTE="/Users/arya/Downloads/Actually Useful Stuff/Random Stuff/palette.json"
-if [[ -f "$PALETTE" ]]; then
-    cp "$PALETTE" "$APP/Contents/Resources/palette.json"
+if [[ -f "Resources/palette.json" ]]; then
+    cp "Resources/palette.json" "$APP/Contents/Resources/palette.json"
 else
-    echo "    (warn) palette.json not found at $PALETTE — using built-in fallback"
+    echo "    (warn) Resources/palette.json missing — using built-in fallback"
 fi
 
 # Ad-hoc sign so macOS is happy launching it locally (no dev certificate needed).

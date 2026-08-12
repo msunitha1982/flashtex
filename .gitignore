@@ -23,6 +23,7 @@ texput.log
 doc-1.pdf
 
 # Xcode
-*.xcodeproj/
+# FlashTeX.xcodeproj IS tracked (the project wrapper lives in the repo);
+# only per-user and derived data stay ignored.
 xcuserdata/
 DerivedData/

@@ -1,0 +1,320 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		BB0000000000000000000001 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000001 /* main.swift */; };
+		BB0000000000000000000002 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000002 /* AppDelegate.swift */; };
+		BB0000000000000000000003 /* CommandPaletteWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000003 /* CommandPaletteWindowController.swift */; };
+		BB0000000000000000000004 /* Compiler.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000004 /* Compiler.swift */; };
+		BB0000000000000000000005 /* EditorTextView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000005 /* EditorTextView.swift */; };
+		BB0000000000000000000006 /* FlashWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000006 /* FlashWindowController.swift */; };
+		BB0000000000000000000007 /* GutterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000007 /* GutterView.swift */; };
+		BB0000000000000000000008 /* InlineLookUpView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000008 /* InlineLookUpView.swift */; };
+		BB0000000000000000000009 /* LatexHighlighter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000009 /* LatexHighlighter.swift */; };
+		BB000000000000000000000A /* MainWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000A /* MainWindowController.swift */; };
+		BB000000000000000000000B /* MathFoldingTextView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000B /* MathFoldingTextView.swift */; };
+		BB000000000000000000000C /* MathRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000C /* MathRenderer.swift */; };
+		BB000000000000000000000D /* Palette.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000D /* Palette.swift */; };
+		BB000000000000000000000E /* PreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000E /* PreviewView.swift */; };
+		BB000000000000000000000F /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000F /* SettingsStore.swift */; };
+		BB0000000000000000000010 /* SettingsWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000010 /* SettingsWindowController.swift */; };
+		BB0000000000000000000011 /* TeXSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000011 /* TeXSupport.swift */; };
+		BB0000000000000000000012 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000012 /* Theme.swift */; };
+		BB0000000000000000000013 /* VimMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000013 /* VimMode.swift */; };
+		BB0000000000000000000014 /* palette.json in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000015 /* palette.json */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		AA0000000000000000000001 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		AA0000000000000000000002 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		AA0000000000000000000003 /* CommandPaletteWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPaletteWindowController.swift; sourceTree = "<group>"; };
+		AA0000000000000000000004 /* Compiler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Compiler.swift; sourceTree = "<group>"; };
+		AA0000000000000000000005 /* EditorTextView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorTextView.swift; sourceTree = "<group>"; };
+		AA0000000000000000000006 /* FlashWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlashWindowController.swift; sourceTree = "<group>"; };
+		AA0000000000000000000007 /* GutterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GutterView.swift; sourceTree = "<group>"; };
+		AA0000000000000000000008 /* InlineLookUpView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineLookUpView.swift; sourceTree = "<group>"; };
+		AA0000000000000000000009 /* LatexHighlighter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LatexHighlighter.swift; sourceTree = "<group>"; };
+		AA000000000000000000000A /* MainWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainWindowController.swift; sourceTree = "<group>"; };
+		AA000000000000000000000B /* MathFoldingTextView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathFoldingTextView.swift; sourceTree = "<group>"; };
+		AA000000000000000000000C /* MathRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathRenderer.swift; sourceTree = "<group>"; };
+		AA000000000000000000000D /* Palette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Palette.swift; sourceTree = "<group>"; };
+		AA000000000000000000000E /* PreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewView.swift; sourceTree = "<group>"; };
+		AA000000000000000000000F /* SettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStore.swift; sourceTree = "<group>"; };
+		AA0000000000000000000010 /* SettingsWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowController.swift; sourceTree = "<group>"; };
+		AA0000000000000000000011 /* TeXSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeXSupport.swift; sourceTree = "<group>"; };
+		AA0000000000000000000012 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		AA0000000000000000000013 /* VimMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VimMode.swift; sourceTree = "<group>"; };
+		AA0000000000000000000014 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		AA0000000000000000000015 /* palette.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = palette.json; sourceTree = "<group>"; };
+		AA0000000000000000000016 /* FlashTeX.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FlashTeX.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		CC0000000000000000000003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		DD0000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				DD0000000000000000000002 /* FlashTeX */,
+				DD0000000000000000000004 /* Resources */,
+				AA0000000000000000000014 /* Info.plist */,
+				DD0000000000000000000003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		DD0000000000000000000002 /* FlashTeX */ = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000001 /* main.swift */,
+				AA0000000000000000000002 /* AppDelegate.swift */,
+				AA0000000000000000000003 /* CommandPaletteWindowController.swift */,
+				AA0000000000000000000004 /* Compiler.swift */,
+				AA0000000000000000000005 /* EditorTextView.swift */,
+				AA0000000000000000000006 /* FlashWindowController.swift */,
+				AA0000000000000000000007 /* GutterView.swift */,
+				AA0000000000000000000008 /* InlineLookUpView.swift */,
+				AA0000000000000000000009 /* LatexHighlighter.swift */,
+				AA000000000000000000000A /* MainWindowController.swift */,
+				AA000000000000000000000B /* MathFoldingTextView.swift */,
+				AA000000000000000000000C /* MathRenderer.swift */,
+				AA000000000000000000000D /* Palette.swift */,
+				AA000000000000000000000E /* PreviewView.swift */,
+				AA000000000000000000000F /* SettingsStore.swift */,
+				AA0000000000000000000010 /* SettingsWindowController.swift */,
+				AA0000000000000000000011 /* TeXSupport.swift */,
+				AA0000000000000000000012 /* Theme.swift */,
+				AA0000000000000000000013 /* VimMode.swift */,
+			);
+			path = Sources/FlashTeX;
+			sourceTree = "<group>";
+		};
+		DD0000000000000000000003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000016 /* FlashTeX.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		DD0000000000000000000004 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000015 /* palette.json */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		EE0000000000000000000001 /* FlashTeX */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = EE0000000000000000000004 /* Build configuration list for PBXNativeTarget "FlashTeX" */;
+			buildPhases = (
+				CC0000000000000000000001 /* Sources */,
+				CC0000000000000000000003 /* Frameworks */,
+				CC0000000000000000000002 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = FlashTeX;
+			productName = FlashTeX;
+			productReference = AA0000000000000000000016 /* FlashTeX.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		EE0000000000000000000002 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastSwiftUpdateCheck = 1420;
+				LastUpgradeCheck = 1420;
+			};
+			buildConfigurationList = EE0000000000000000000003 /* Build configuration list for PBXProject "FlashTeX" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = DD0000000000000000000001;
+			productRefGroup = DD0000000000000000000003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				EE0000000000000000000001 /* FlashTeX */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		CC0000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BB0000000000000000000014 /* palette.json in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		CC0000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BB0000000000000000000001 /* main.swift in Sources */,
+				BB0000000000000000000002 /* AppDelegate.swift in Sources */,
+				BB0000000000000000000003 /* CommandPaletteWindowController.swift in Sources */,
+				BB0000000000000000000004 /* Compiler.swift in Sources */,
+				BB0000000000000000000005 /* EditorTextView.swift in Sources */,
+				BB0000000000000000000006 /* FlashWindowController.swift in Sources */,
+				BB0000000000000000000007 /* GutterView.swift in Sources */,
+				BB0000000000000000000008 /* InlineLookUpView.swift in Sources */,
+				BB0000000000000000000009 /* LatexHighlighter.swift in Sources */,
+				BB000000000000000000000A /* MainWindowController.swift in Sources */,
+				BB000000000000000000000B /* MathFoldingTextView.swift in Sources */,
+				BB000000000000000000000C /* MathRenderer.swift in Sources */,
+				BB000000000000000000000D /* Palette.swift in Sources */,
+				BB000000000000000000000E /* PreviewView.swift in Sources */,
+				BB000000000000000000000F /* SettingsStore.swift in Sources */,
+				BB0000000000000000000010 /* SettingsWindowController.swift in Sources */,
+				BB0000000000000000000011 /* TeXSupport.swift in Sources */,
+				BB0000000000000000000012 /* Theme.swift in Sources */,
+				BB0000000000000000000013 /* VimMode.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		EE0000000000000000000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 12.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		EE0000000000000000000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 12.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		EE0000000000000000000007 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.flashtex.editor;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.7;
+			};
+			name = Debug;
+		};
+		EE0000000000000000000008 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.flashtex.editor;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.7;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		EE0000000000000000000003 /* Build configuration list for PBXProject "FlashTeX" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EE0000000000000000000005 /* Debug */,
+				EE0000000000000000000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		EE0000000000000000000004 /* Build configuration list for PBXNativeTarget "FlashTeX" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EE0000000000000000000007 /* Debug */,
+				EE0000000000000000000008 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = EE0000000000000000000002 /* Project object */;
+}

@@ -7,7 +7,7 @@ import Foundation
 // the changed key in `userInfo`, so the editor, highlighter, preview and Flash
 // folding view can re-apply just the parts that matter without restarting.
 
-final class SettingsStore {
+final class SettingsStore: ObservableObject {
 
     static let shared = SettingsStore()
 
@@ -127,6 +127,7 @@ final class SettingsStore {
     // MARK: - Mutation
 
     private func set(_ value: Any?, _ key: Key) {
+        objectWillChange.send()
         defaults.set(value, forKey: key.rawValue)
         NotificationCenter.default.post(name: Self.changedNotification,
                                         object: self,

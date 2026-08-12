@@ -1,58 +1,26 @@
 import AppKit
+import SwiftUI
 
-// SettingsWindowController — the Preferences window (⌘,).
-//
-// Four panes: Appearance, Editor, Flash Mode, Vim Mode. Every control writes
-// straight through to SettingsStore, which posts a change notification; the
-// editors, highlighter and Flash folding view re-apply live.
+// MARK: - Settings Window Controller (Host for SwiftUI SettingsView)
 
 final class SettingsWindowController: NSWindowController {
 
-    /// Strong reference — `present()`'s controller is otherwise released as
-    /// soon as the method returns and the window would go blank/close.
     private static var current: SettingsWindowController?
-
-    private let settings = SettingsStore.shared
-
-    private var flavourPopup: NSPopUpButton!
-    private var appearanceSegment: NSSegmentedControl!
-    private var lineIndicatorWell: NSColorWell!
-    private var backgroundOverrideWell: NSColorWell!
-    private var backgroundUsePalette: NSButton!
-    private var syntaxPopups: [String: NSPopUpButton] = [:]
-
-    private var fontPopup: NSPopUpButton!
-    private var lineHeightSlider: NSSlider!
-    private var lineHeightLabel: NSTextField!
-    private var ligaturesCheck: NSButton!
-    private var columnPopup: NSPopUpButton!
-    private var gutterPopup: NSPopUpButton!
-
-    private var mathScaleSlider: NSSlider!
-    private var mathScaleLabel: NSTextField!
-    private var chipFillPopup: NSPopUpButton!
-    private var chipPaddingSlider: NSSlider!
-    private var chipPaddingLabel: NSTextField!
-    private var chipRadiusSlider: NSSlider!
-    private var chipRadiusLabel: NSTextField!
-    private var debounceSlider: NSSlider!
-    private var debounceLabel: NSTextField!
-    private var unfoldPopup: NSPopUpButton!
-
-    private var vimCheck: NSButton!
 
     static func present() {
         let controller: SettingsWindowController
         if let existing = current {
             controller = existing
         } else {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 480),
-                                  styleMask: [.titled, .closable],
-                                  backing: .buffered, defer: false)
+            let hostingController = NSHostingController(rootView: SettingsView())
+            let window = NSWindow(contentViewController: hostingController)
             window.title = "FlashTeX Settings"
+            window.styleMask = [.titled, .closable, .miniaturizable]
             window.isReleasedWhenClosed = false
+            window.setContentSize(NSSize(width: 580, height: 520))
+            
             controller = SettingsWindowController(window: window)
-            controller.window?.delegate = controller
+            window.delegate = controller
             current = controller
         }
         NSApp.activate(ignoringOtherApps: true)
@@ -63,391 +31,239 @@ final class SettingsWindowController: NSWindowController {
 
     override init(window: NSWindow?) {
         super.init(window: window)
-        buildContent()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
 
-    // MARK: - Assembly
+extension SettingsWindowController: NSWindowDelegate {
+    func windowWillClose(_ notification: Notification) {
+        if Self.current === self { Self.current = nil }
+    }
+}
 
-    private func buildContent() {
-        guard let window else { return }
+// MARK: - Standard Label-Aligned Form Row Helper
 
-        let tabs = NSTabView(frame: NSRect(x: 0, y: 0, width: 560, height: 440))
-        tabs.addTabViewItem(makeAppearanceTab())
-        tabs.addTabViewItem(makeEditorTab())
-        tabs.addTabViewItem(makeFlashTab())
-        tabs.addTabViewItem(makeVimTab())
+struct FormRow<Content: View>: View {
+    let label: String
+    let content: Content
 
-        let container = NSView()
-        tabs.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(tabs)
-        NSLayoutConstraint.activate([
-            tabs.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-            tabs.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
-            tabs.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
-            tabs.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12),
-        ])
-        window.contentView = container
-        window.setContentSize(NSSize(width: 560, height: 480))
+    init(_ label: String, @ViewBuilder content: () -> Content) {
+        self.label = label
+        self.content = content()
     }
 
-    // MARK: - Control helpers
-
-    private func label(_ text: String, size: CGFloat = 13) -> NSTextField {
-        let l = NSTextField(labelWithString: text)
-        l.font = .systemFont(ofSize: size)
-        return l
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(label)
+                .font(.body)
+                .frame(width: 140, alignment: .trailing)
+            content
+                .frame(maxWidth: 240, alignment: .leading)
+        }
     }
+}
 
-    private func row(_ title: String, control: NSView, controlWidth: CGFloat = 180) -> NSStackView {
-        let row = NSStackView(views: [label(title), control])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 12
-        row.distribution = .fill
-        control.translatesAutoresizingMaskIntoConstraints = false
-        control.widthAnchor.constraint(equalToConstant: controlWidth).isActive = true
-        return row
-    }
+// MARK: - Main SwiftUI Settings View
 
-    private func makePopup(_ titles: [String], action: Selector) -> NSPopUpButton {
-        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 180, height: 26), pullsDown: false)
-        popup.addItems(withTitles: titles)
-        popup.target = self
-        popup.action = action
-        return popup
-    }
+struct SettingsView: View {
+    @ObservedObject var settings = SettingsStore.shared
 
-    private func pane(_ views: [NSView]) -> NSView {
-        let stack = NSStackView(views: views)
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 18, left: 12, bottom: 18, right: 12)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.autoresizingMask = [.width, .height]
-        return stack
-    }
-
-    /// A labelled slider row: "title   [slider] [value]".
-    private func sliderRow(_ title: String, slider: NSSlider, valueLabel: NSTextField,
-                           controlWidth: CGFloat) -> NSStackView {
-        let titleLabel = label(title)
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.widthAnchor.constraint(equalToConstant: 150).isActive = true
-        slider.translatesAutoresizingMaskIntoConstraints = false
-        slider.widthAnchor.constraint(equalToConstant: controlWidth).isActive = true
-        let row = NSStackView(views: [titleLabel, slider, valueLabel])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 10
-        return row
-    }
-
-    // MARK: - Appearance tab
-
-    private func makeAppearanceTab() -> NSTabViewItem {
-        flavourPopup = makePopup(SettingsStore.Flavor.allCases.map { $0.displayName },
-                                 action: #selector(flavourChanged(_:)))
-        flavourPopup.selectItem(at: SettingsStore.Flavor.allCases.firstIndex(of: settings.flavor) ?? 0)
-
-        appearanceSegment = NSSegmentedControl(labels: ["Light", "Dark"],
-                                               trackingMode: .selectOne,
-                                               target: self,
-                                               action: #selector(appearanceChanged(_:)))
-        appearanceSegment.selectedSegment = settings.isDarkMode ? 1 : 0
-        appearanceSegment.translatesAutoresizingMaskIntoConstraints = false
-        appearanceSegment.widthAnchor.constraint(equalToConstant: 180).isActive = true
-
-        lineIndicatorWell = NSColorWell()
-        lineIndicatorWell.color = Theme.currentLine
-        lineIndicatorWell.target = self
-        lineIndicatorWell.action = #selector(lineIndicatorChanged(_:))
-        lineIndicatorWell.translatesAutoresizingMaskIntoConstraints = false
-        lineIndicatorWell.widthAnchor.constraint(equalToConstant: 180).isActive = true
-
-        backgroundOverrideWell = NSColorWell()
-        backgroundOverrideWell.color = Theme.nsColor(from: settings.backgroundHex)
-            ?? Theme.editorBackground
-        backgroundOverrideWell.target = self
-        backgroundOverrideWell.action = #selector(backgroundOverrideChanged(_:))
-        backgroundOverrideWell.isEnabled = !settings.backgroundHex.isEmpty
-        backgroundOverrideWell.translatesAutoresizingMaskIntoConstraints = false
-        backgroundOverrideWell.widthAnchor.constraint(equalToConstant: 120).isActive = true
-
-        backgroundUsePalette = NSButton(checkboxWithTitle: "Use palette background",
-                                        target: self,
-                                        action: #selector(backgroundUsePaletteToggled(_:)))
-        backgroundUsePalette.state = settings.backgroundHex.isEmpty ? .on : .off
-
-        let bgRow = NSStackView(views: [backgroundUsePalette, backgroundOverrideWell])
-        bgRow.orientation = .horizontal
-        bgRow.spacing = 10
-        bgRow.alignment = .centerY
-
-        let syntaxSection = label("Syntax colors", size: 11)
-        syntaxSection.textColor = .secondaryLabelColor
-        syntaxSection.font = .systemFont(ofSize: 11, weight: .semibold)
-
-        let grid = NSGridView(views: [])
-        grid.rowSpacing = 6
-        grid.columnSpacing = 16
-        let roles = Theme.syntaxRoles
-        for i in stride(from: 0, to: roles.count, by: 2) {
-            var cells: [NSView] = []
-            for j in i..<min(i + 2, roles.count) {
-                let (role, displayName) = roles[j]
-                let popup = makePopup(["Default (palette)"]
-                                        + Theme.accentNames.map(Theme.accentDisplayName),
-                                      action: #selector(syntaxAccentChanged(_:)))
-                popup.identifier = NSUserInterfaceItemIdentifier(role)
-                if let accent = currentAccent(for: role),
-                   let idx = Theme.accentNames.firstIndex(of: accent) {
-                    popup.selectItem(at: idx + 1)
-                } else {
-                    popup.selectItem(at: 0)
+    var body: some View {
+        TabView {
+            AppearanceSettingsView(settings: settings)
+                .tabItem {
+                    Label("Appearance", systemImage: "paintbrush")
                 }
-                popup.translatesAutoresizingMaskIntoConstraints = false
-                popup.widthAnchor.constraint(equalToConstant: 170).isActive = true
-                cells.append(label(displayName))
-                cells.append(popup)
-                syntaxPopups[role] = popup
+
+            EditorSettingsView(settings: settings)
+                .tabItem {
+                    Label("Editor", systemImage: "doc.text")
+                }
+
+            FlashModeSettingsView(settings: settings)
+                .tabItem {
+                    Label("Flash Mode", systemImage: "bolt.fill")
+                }
+
+            VimSettingsView(settings: settings)
+                .tabItem {
+                    Label("Vim Mode", systemImage: "keyboard")
+                }
+        }
+        .frame(width: 580, height: 500)
+        .padding(16)
+    }
+}
+
+// MARK: - Tab 1: Appearance Settings View
+
+struct AppearanceSettingsView: View {
+    @ObservedObject var settings: SettingsStore
+    @State private var usePaletteBg: Bool = true
+    @State private var customBgColor: Color = .clear
+    @State private var lineIndicatorColor: Color = .blue
+
+    init(settings: SettingsStore) {
+        self.settings = settings
+        _usePaletteBg = State(initialValue: settings.backgroundHex.isEmpty)
+        _customBgColor = State(initialValue: Theme.nsColor(from: settings.backgroundHex).map { Color($0) } ?? Color(Theme.editorBackground))
+        _lineIndicatorColor = State(initialValue: Color(Theme.currentLine))
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                // Main Appearance Section
+                themeSection
+
+                Divider()
+
+                // Syntax Colors Section
+                syntaxHeader
+                syntaxGrid
+
+                // Reset Action
+                resetButtonRow
             }
-            grid.addRow(with: cells)
-        }
-
-        let resetButton = NSButton(title: "Reset colors to palette", target: self,
-                                   action: #selector(resetColors(_:)))
-
-        let views = [
-            row("Catppuccin flavour", control: flavourPopup),
-            row("Appearance", control: appearanceSegment),
-            row("Line indicator", control: lineIndicatorWell),
-            bgRow,
-            syntaxSection,
-            grid,
-            resetButton,
-        ]
-        let item = NSTabViewItem(identifier: "appearance")
-        item.label = "Appearance"
-        item.view = pane(views)
-        return item
-    }
-
-    // MARK: - Editor tab
-
-    private func makeEditorTab() -> NSTabViewItem {
-        let fonts = ["System (SF Mono)", "Menlo", "Monaco", "Courier New",
-                     "JetBrains Mono", "Fira Code", "Latin Modern Mono", "Latin Modern Roman"]
-        fontPopup = makePopup(fonts, action: #selector(fontChanged(_:)))
-        let currentFamily = settings.fontFamily
-        if let idx = fonts.firstIndex(of: currentFamily) {
-            fontPopup.selectItem(at: idx)
-        } else if !currentFamily.isEmpty {
-            fontPopup.addItem(withTitle: currentFamily)
-            fontPopup.selectItem(withTitle: currentFamily)
-        } else {
-            fontPopup.selectItem(at: 0)
-        }
-
-        lineHeightSlider = NSSlider(value: settings.lineHeight,
-                                    minValue: 1.2, maxValue: 1.6,
-                                    target: self, action: #selector(lineHeightChanged(_:)))
-        lineHeightSlider.numberOfTickMarks = 9
-        lineHeightSlider.allowsTickMarkValuesOnly = false
-        lineHeightLabel = label(String(format: "%.2f×", settings.lineHeight))
-        lineHeightLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
-        let lhRow = sliderRow("Line height", slider: lineHeightSlider,
-                              valueLabel: lineHeightLabel, controlWidth: 140)
-
-        ligaturesCheck = NSButton(checkboxWithTitle: "Enable font ligatures",
-                                  target: self, action: #selector(ligaturesChanged(_:)))
-        ligaturesCheck.state = settings.ligatures ? .on : .off
-
-        columnPopup = makePopup(["Full width", "80 characters (centered)"],
-                                action: #selector(columnChanged(_:)))
-        columnPopup.selectItem(at: settings.maxColumnChars > 0 ? 1 : 0)
-
-        gutterPopup = makePopup(SettingsStore.GutterMode.allCases.map { $0.displayName },
-                                action: #selector(gutterChanged(_:)))
-        gutterPopup.selectItem(at: SettingsStore.GutterMode.allCases.firstIndex(of: settings.gutterMode) ?? 1)
-
-        let views = [
-            row("Font family", control: fontPopup),
-            label("Line height", size: 11).settingSecondary(),
-            lhRow,
-            ligaturesCheck!,
-            row("Max column width", control: columnPopup),
-            row("Line numbers", control: gutterPopup),
-        ]
-        let item = NSTabViewItem(identifier: "editor")
-        item.label = "Editor"
-        item.view = pane(views)
-        return item
-    }
-
-    // MARK: - Flash Mode tab
-
-    private func makeFlashTab() -> NSTabViewItem {
-        mathScaleSlider = NSSlider(value: settings.mathScale,
-                                   minValue: 0.85, maxValue: 1.25,
-                                   target: self, action: #selector(mathScaleChanged(_:)))
-        mathScaleLabel = label(String(format: "%.0f%%", settings.mathScale * 100))
-        mathScaleLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
-        let scaleRow = sliderRow("Math scale", slider: mathScaleSlider,
-                                 valueLabel: mathScaleLabel, controlWidth: 140)
-
-        chipFillPopup = makePopup(SettingsStore.ChipFill.allCases.map { $0.displayName },
-                                  action: #selector(chipFillChanged(_:)))
-        chipFillPopup.selectItem(at: SettingsStore.ChipFill.allCases.firstIndex(of: settings.chipFill) ?? 0)
-
-        chipPaddingSlider = NSSlider(value: settings.chipPadding,
-                                     minValue: 0, maxValue: 12,
-                                     target: self, action: #selector(chipPaddingChanged(_:)))
-        chipPaddingSlider.numberOfTickMarks = 13
-        chipPaddingSlider.allowsTickMarkValuesOnly = true
-        chipPaddingLabel = label(String(format: "%.0f pt", settings.chipPadding))
-        chipPaddingLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
-        let padRow = sliderRow("Padding", slider: chipPaddingSlider,
-                               valueLabel: chipPaddingLabel, controlWidth: 140)
-
-        chipRadiusSlider = NSSlider(value: settings.chipRadius,
-                                    minValue: 2, maxValue: 8,
-                                    target: self, action: #selector(chipRadiusChanged(_:)))
-        chipRadiusSlider.numberOfTickMarks = 7
-        chipRadiusSlider.allowsTickMarkValuesOnly = true
-        chipRadiusLabel = label(String(format: "%.0f pt", settings.chipRadius))
-        chipRadiusLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
-        let radiusRow = sliderRow("Corner radius", slider: chipRadiusSlider,
-                                  valueLabel: chipRadiusLabel, controlWidth: 140)
-
-        debounceSlider = NSSlider(value: settings.renderDebounceMs,
-                                  minValue: 50, maxValue: 500,
-                                  target: self, action: #selector(debounceChanged(_:)))
-        debounceSlider.numberOfTickMarks = 10
-        debounceSlider.allowsTickMarkValuesOnly = false
-        debounceLabel = label(String(format: "%.0f ms", settings.renderDebounceMs))
-        debounceLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
-        let debounceRow = sliderRow("Debounce", slider: debounceSlider,
-                                    valueLabel: debounceLabel, controlWidth: 140)
-
-        unfoldPopup = makePopup(SettingsStore.UnfoldTrigger.allCases.map { $0.displayName },
-                                action: #selector(unfoldChanged(_:)))
-        unfoldPopup.selectItem(at: SettingsStore.UnfoldTrigger.allCases.firstIndex(of: settings.unfoldTrigger) ?? 0)
-
-        let views = [
-            label("Rendering", size: 11).settingSecondary(),
-            scaleRow,
-            label("Chip overlay", size: 11).settingSecondary(),
-            row("Background", control: chipFillPopup),
-            padRow,
-            radiusRow,
-            label("Compile / render", size: 11).settingSecondary(),
-            debounceRow,
-            row("Unfold trigger", control: unfoldPopup),
-        ]
-        let item = NSTabViewItem(identifier: "flash")
-        item.label = "Flash Mode"
-        item.view = pane(views)
-        return item
-    }
-
-    // MARK: - Vim tab
-
-    private func makeVimTab() -> NSTabViewItem {
-        vimCheck = NSButton(checkboxWithTitle: "Enable Vim-style editing",
-                            target: self, action: #selector(vimChanged(_:)))
-        vimCheck.state = settings.vimMode ? .on : .off
-
-        let info = label("""
-        Modal editing in the editor and Flash Mode:
-
-        Esc               normal mode
-        i / I / a / A     insert: after cursor / line start / after char / line end
-        o / O             new line below / above
-        h j k l / w b e   cursor / word motions
-        0 ^ $             line start / first non-blank / line end
-        gg / G / \\{n}G    document start / end / nth line
-        v                 visual mode — move to select, then y / d
-        x / X             delete char under / before cursor
-        D / C             delete / change to end of line
-        dd / yy / p / P   delete / yank line, paste after / before
-        cw / dw / d$ / y$ change / delete / yank with a motion
-        u                 undo (⌘Z also works)
-        """, size: 12)
-        info.maximumNumberOfLines = 0
-        info.lineBreakMode = .byWordWrapping
-        info.preferredMaxLayoutWidth = 480
-        info.setContentCompressionResistancePriority(.required, for: .horizontal)
-
-        let views: [NSView] = [vimCheck!, info]
-        let item = NSTabViewItem(identifier: "vim")
-        item.label = "Vim Mode"
-        item.view = pane(views)
-        return item
-    }
-
-    // MARK: - Actions — Appearance
-
-    @objc private func flavourChanged(_ sender: NSPopUpButton) {
-        let flavors = SettingsStore.Flavor.allCases
-        guard sender.indexOfSelectedItem >= 0,
-              sender.indexOfSelectedItem < flavors.count else { return }
-        settings.flavor = flavors[sender.indexOfSelectedItem]
-        appearanceSegment.selectedSegment = settings.isDarkMode ? 1 : 0
-        refreshLineIndicatorWell()
-    }
-
-    @objc private func appearanceChanged(_ sender: NSSegmentedControl) {
-        settings.isDarkMode = (sender.selectedSegment == 1)
-        if let idx = SettingsStore.Flavor.allCases.firstIndex(of: settings.flavor) {
-            flavourPopup.selectItem(at: idx)
-        }
-        refreshLineIndicatorWell()
-    }
-
-    /// The colour well follows the mode-aware default unless the user has set a
-    /// custom override.
-    private func refreshLineIndicatorWell() {
-        lineIndicatorWell.color = Theme.currentLine
-    }
-
-    @objc private func lineIndicatorChanged(_ sender: NSColorWell) {
-        settings.lineIndicatorHex = SettingsWindowController.hex(sender.color)
-    }
-
-    @objc private func backgroundOverrideChanged(_ sender: NSColorWell) {
-        settings.backgroundHex = SettingsWindowController.hex(sender.color)
-    }
-
-    @objc private func backgroundUsePaletteToggled(_ sender: NSButton) {
-        if sender.state == .on {
-            settings.backgroundHex = ""
-            backgroundOverrideWell.isEnabled = false
-        } else {
-            settings.backgroundHex = SettingsWindowController.hex(backgroundOverrideWell.color)
-            backgroundOverrideWell.isEnabled = true
+            .padding()
         }
     }
 
-    @objc private func syntaxAccentChanged(_ sender: NSPopUpButton) {
-        guard let role = sender.identifier?.rawValue else { return }
-        var overrides = settings.syntaxOverrides
-        let idx = sender.indexOfSelectedItem
-        if idx <= 0 {
-            overrides.removeValue(forKey: role)
-        } else if idx - 1 < Theme.accentNames.count {
-            overrides[role] = Theme.accentNames[idx - 1]
+    private var themeSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            FormRow("Catppuccin Flavour") {
+                Picker("", selection: Binding(
+                    get: { settings.flavor },
+                    set: { settings.flavor = $0 }
+                )) {
+                    ForEach(SettingsStore.Flavor.allCases, id: \.self) { flavor in
+                        Text(flavor.displayName).tag(flavor)
+                    }
+                }
+                .labelsHidden()
+            }
+
+            FormRow("Appearance") {
+                Picker("", selection: Binding(
+                    get: { settings.isDarkMode ? 1 : 0 },
+                    set: { settings.isDarkMode = ($0 == 1) }
+                )) {
+                    Text("Light").tag(0)
+                    Text("Dark").tag(1)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+
+            FormRow("Line Indicator") {
+                ColorPicker("", selection: $lineIndicatorColor, supportsOpacity: true)
+                    .labelsHidden()
+                    .onChange(of: lineIndicatorColor) { newColor in
+                        settings.lineIndicatorHex = hexString(from: newColor)
+                    }
+            }
+
+            FormRow("Background") {
+                HStack(spacing: 10) {
+                    Toggle("Use palette default", isOn: $usePaletteBg)
+                        .onChange(of: usePaletteBg) { isDefault in
+                            if isDefault {
+                                settings.backgroundHex = ""
+                            } else {
+                                settings.backgroundHex = hexString(from: customBgColor)
+                            }
+                        }
+
+                    if !usePaletteBg {
+                        ColorPicker("", selection: $customBgColor)
+                            .labelsHidden()
+                            .onChange(of: customBgColor) { newColor in
+                                settings.backgroundHex = hexString(from: newColor)
+                            }
+                    }
+                }
+            }
         }
-        settings.syntaxOverrides = overrides
     }
 
-    /// The accent currently applied to a role (nil = palette default).
-    private func currentAccent(for role: String) -> String? {
+    private var syntaxHeader: some View {
+        Text("SYNTAX COLORS")
+            .font(.caption)
+            .fontWeight(.bold)
+            .foregroundColor(.secondary)
+    }
+
+    private var syntaxGrid: some View {
+        let roles = Theme.syntaxRoles
+        return VStack(spacing: 10) {
+            ForEach(0..<((roles.count + 1) / 2), id: \.self) { rowIdx in
+                HStack(spacing: 16) {
+                    let left = roles[rowIdx * 2]
+                    HStack(spacing: 8) {
+                        Text(left.displayName)
+                            .font(.subheadline)
+                            .frame(width: 120, alignment: .trailing)
+                        syntaxPicker(for: left.role)
+                    }
+
+                    if rowIdx * 2 + 1 < roles.count {
+                        let right = roles[rowIdx * 2 + 1]
+                        HStack(spacing: 8) {
+                            Text(right.displayName)
+                                .font(.subheadline)
+                                .frame(width: 120, alignment: .trailing)
+                            syntaxPicker(for: right.role)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var resetButtonRow: some View {
+        HStack {
+            Spacer()
+            Button("Reset Colors to Palette") {
+                settings.backgroundHex = ""
+                settings.lineIndicatorHex = ""
+                settings.syntaxOverrides = [:]
+                usePaletteBg = true
+                lineIndicatorColor = Color(Theme.currentLine)
+            }
+            .buttonStyle(.bordered)
+            Spacer()
+        }
+        .padding(.top, 8)
+    }
+
+    @ViewBuilder
+    private func syntaxPicker(for role: String) -> some View {
+        let currentAccent = currentAccentName(for: role)
+        Picker("", selection: Binding(
+            get: { currentAccent ?? "default" },
+            set: { selected in
+                var overrides = settings.syntaxOverrides
+                if selected == "default" {
+                    overrides.removeValue(forKey: role)
+                } else {
+                    overrides[role] = selected
+                }
+                settings.syntaxOverrides = overrides
+            }
+        )) {
+            Text("Default (palette)").tag("default")
+            ForEach(Theme.accentNames, id: \.self) { accent in
+                Text(Theme.accentDisplayName(accent)).tag(accent)
+            }
+        }
+        .labelsHidden()
+        .frame(width: 130, alignment: .leading)
+    }
+
+    private func currentAccentName(for role: String) -> String? {
         guard let override = settings.syntaxOverride(for: role) else { return nil }
         if Theme.accentNames.contains(override) { return override }
-        // A legacy absolute-hex override: match it to an accent if it is one.
         let lower = override.lowercased()
         for name in Theme.accentNames {
             if let hex = Theme.palette.color(name), hex.lowercased() == lower {
@@ -457,111 +273,360 @@ final class SettingsWindowController: NSWindowController {
         return nil
     }
 
-    @objc private func resetColors(_ sender: Any?) {
-        settings.backgroundHex = ""
-        settings.lineIndicatorHex = ""
-        settings.syntaxOverrides = [:]
-        backgroundUsePalette.state = .on
-        backgroundOverrideWell.isEnabled = false
-        backgroundOverrideWell.color = Theme.editorBackground
-        refreshLineIndicatorWell()
-        for (role, popup) in syntaxPopups {
-            popup.selectItem(at: 0)
-        }
-    }
-
-    // MARK: - Actions — Editor
-
-    @objc private func fontChanged(_ sender: NSPopUpButton) {
-        let title = sender.titleOfSelectedItem ?? ""
-        settings.fontFamily = title.hasPrefix("System") ? "" : title
-    }
-
-    @objc private func lineHeightChanged(_ sender: NSSlider) {
-        settings.lineHeight = CGFloat(sender.doubleValue)
-        lineHeightLabel.stringValue = String(format: "%.2f×", sender.doubleValue)
-    }
-
-    @objc private func ligaturesChanged(_ sender: NSButton) {
-        settings.ligatures = (sender.state == .on)
-    }
-
-    @objc private func columnChanged(_ sender: NSPopUpButton) {
-        settings.maxColumnChars = sender.indexOfSelectedItem == 0 ? 0 : 80
-    }
-
-    @objc private func gutterChanged(_ sender: NSPopUpButton) {
-        let modes = SettingsStore.GutterMode.allCases
-        guard sender.indexOfSelectedItem >= 0,
-              sender.indexOfSelectedItem < modes.count else { return }
-        settings.gutterMode = modes[sender.indexOfSelectedItem]
-    }
-
-    // MARK: - Actions — Flash Mode
-
-    @objc private func mathScaleChanged(_ sender: NSSlider) {
-        settings.mathScale = CGFloat(sender.doubleValue)
-        mathScaleLabel.stringValue = String(format: "%.0f%%", sender.doubleValue * 100)
-    }
-
-    @objc private func chipFillChanged(_ sender: NSPopUpButton) {
-        let fills = SettingsStore.ChipFill.allCases
-        guard sender.indexOfSelectedItem >= 0,
-              sender.indexOfSelectedItem < fills.count else { return }
-        settings.chipFill = fills[sender.indexOfSelectedItem]
-    }
-
-    @objc private func chipPaddingChanged(_ sender: NSSlider) {
-        settings.chipPadding = CGFloat(sender.doubleValue)
-        chipPaddingLabel.stringValue = String(format: "%.0f pt", sender.doubleValue)
-    }
-
-    @objc private func chipRadiusChanged(_ sender: NSSlider) {
-        settings.chipRadius = CGFloat(sender.doubleValue)
-        chipRadiusLabel.stringValue = String(format: "%.0f pt", sender.doubleValue)
-    }
-
-    @objc private func debounceChanged(_ sender: NSSlider) {
-        settings.renderDebounceMs = sender.doubleValue
-        debounceLabel.stringValue = String(format: "%.0f ms", sender.doubleValue)
-    }
-
-    @objc private func unfoldChanged(_ sender: NSPopUpButton) {
-        let triggers = SettingsStore.UnfoldTrigger.allCases
-        guard sender.indexOfSelectedItem >= 0,
-              sender.indexOfSelectedItem < triggers.count else { return }
-        settings.unfoldTrigger = triggers[sender.indexOfSelectedItem]
-    }
-
-    // MARK: - Actions — Vim
-
-    @objc private func vimChanged(_ sender: NSButton) {
-        settings.vimMode = (sender.state == .on)
-    }
-
-    // MARK: - Color utilities
-
-    /// NSColor → "RRGGBB" (in sRGB).
-    static func hex(_ color: NSColor) -> String {
-        let c = color.usingColorSpace(.sRGB) ?? color
-        let r = Int((c.redComponent * 255).rounded())
-        let g = Int((c.greenComponent * 255).rounded())
-        let b = Int((c.blueComponent * 255).rounded())
+    private func hexString(from color: Color) -> String {
+        guard let nsColor = NSColor(color).usingColorSpace(.sRGB) else { return "" }
+        let r = Int((nsColor.redComponent * 255).rounded())
+        let g = Int((nsColor.greenComponent * 255).rounded())
+        let b = Int((nsColor.blueComponent * 255).rounded())
         return String(format: "%02X%02X%02X", r, g, b)
     }
 }
 
-extension SettingsWindowController: NSWindowDelegate {
-    func windowWillClose(_ notification: Notification) {
-        if Self.current === self { Self.current = nil }
+// MARK: - Tab 2: Editor Settings View
+
+struct EditorSettingsView: View {
+    @ObservedObject var settings: SettingsStore
+
+    private let availableFonts = [
+        "System (SF Mono)", "Menlo", "Monaco", "Courier New",
+        "JetBrains Mono", "Fira Code", "Latin Modern Mono", "Latin Modern Roman"
+    ]
+
+    var body: some View {
+        Form {
+            VStack(alignment: .leading, spacing: 14) {
+                FormRow("Font Family") {
+                    Picker("", selection: Binding(
+                        get: {
+                            let current = settings.fontFamily
+                            return current.isEmpty ? "System (SF Mono)" : current
+                        },
+                        set: {
+                            settings.fontFamily = $0 == "System (SF Mono)" ? "" : $0
+                        }
+                    )) {
+                        ForEach(availableFonts, id: \.self) { font in
+                            Text(font).tag(font)
+                        }
+                    }
+                    .labelsHidden()
+                }
+
+                FormRow("Line Height") {
+                    HStack(spacing: 8) {
+                        Slider(value: Binding(
+                            get: { settings.lineHeight },
+                            set: { settings.lineHeight = $0 }
+                        ), in: 1.2...1.6)
+                        .frame(width: 150)
+
+                        Text(String(format: "%.2fx", settings.lineHeight))
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .frame(width: 50, alignment: .leading)
+                    }
+                }
+
+                FormRow("Font Ligatures") {
+                    Toggle("Enable font ligatures", isOn: Binding(
+                        get: { settings.ligatures },
+                        set: { settings.ligatures = $0 }
+                    ))
+                    .labelsHidden()
+                }
+
+                FormRow("Max Column Width") {
+                    Picker("", selection: Binding(
+                        get: { settings.maxColumnChars > 0 ? 1 : 0 },
+                        set: { settings.maxColumnChars = ($0 == 0 ? 0 : 80) }
+                    )) {
+                        Text("Full width").tag(0)
+                        Text("80 characters (centered)").tag(1)
+                    }
+                    .labelsHidden()
+                }
+
+                FormRow("Line Numbers") {
+                    Picker("", selection: Binding(
+                        get: { settings.gutterMode },
+                        set: { settings.gutterMode = $0 }
+                    )) {
+                        ForEach(SettingsStore.GutterMode.allCases, id: \.self) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                }
+            }
+            .padding()
+        }
     }
 }
 
-private extension NSTextField {
-    /// Smaller secondary-label styling for section headers inside panes.
-    func settingSecondary() -> NSTextField {
-        textColor = .secondaryLabelColor
-        font = .systemFont(ofSize: 11, weight: .semibold)
-        return self
+// MARK: - Tab 3: Flash Mode Settings View
+
+struct FlashModeSettingsView: View {
+    @ObservedObject var settings: SettingsStore
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                // Section: Rendering
+                Group {
+                    Text("RENDERING")
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundColor(.secondary)
+
+                    FormRow("Math Scale") {
+                        HStack(spacing: 8) {
+                            Slider(value: Binding(
+                                get: { settings.mathScale },
+                                set: { settings.mathScale = $0 }
+                            ), in: 0.85...1.25)
+                            .frame(width: 150)
+
+                            Text(String(format: "%.0f%%", settings.mathScale * 100))
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundColor(.secondary)
+                                .frame(width: 50, alignment: .leading)
+                        }
+                    }
+                }
+
+                Divider()
+
+                // Section: Chip Overlay
+                Group {
+                    Text("CHIP OVERLAY")
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundColor(.secondary)
+
+                    FormRow("Background") {
+                        Picker("", selection: Binding(
+                            get: { settings.chipFill },
+                            set: { settings.chipFill = $0 }
+                        )) {
+                            ForEach(SettingsStore.ChipFill.allCases, id: \.self) { fill in
+                                Text(fill.displayName).tag(fill)
+                            }
+                        }
+                        .labelsHidden()
+                    }
+
+                    FormRow("Padding") {
+                        HStack(spacing: 8) {
+                            Slider(value: Binding(
+                                get: { settings.chipPadding },
+                                set: { settings.chipPadding = $0 }
+                            ), in: 0...12)
+                            .frame(width: 150)
+
+                            Text(String(format: "%.0f pt", settings.chipPadding))
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundColor(.secondary)
+                                .frame(width: 50, alignment: .leading)
+                        }
+                    }
+
+                    FormRow("Corner Radius") {
+                        HStack(spacing: 8) {
+                            Slider(value: Binding(
+                                get: { settings.chipRadius },
+                                set: { settings.chipRadius = $0 }
+                            ), in: 2...8)
+                            .frame(width: 150)
+
+                            Text(String(format: "%.0f pt", settings.chipRadius))
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundColor(.secondary)
+                                .frame(width: 50, alignment: .leading)
+                        }
+                    }
+                }
+
+                Divider()
+
+                // Section: Compile & Render
+                Group {
+                    Text("COMPILE & RENDER")
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundColor(.secondary)
+
+                    FormRow("Debounce") {
+                        HStack(spacing: 8) {
+                            Slider(value: Binding(
+                                get: { settings.renderDebounceMs },
+                                set: { settings.renderDebounceMs = $0 }
+                            ), in: 50...500)
+                            .frame(width: 150)
+
+                            Text(String(format: "%.0f ms", settings.renderDebounceMs))
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundColor(.secondary)
+                                .frame(width: 50, alignment: .leading)
+                        }
+                    }
+
+                    FormRow("Unfold Trigger") {
+                        Picker("", selection: Binding(
+                            get: { settings.unfoldTrigger },
+                            set: { settings.unfoldTrigger = $0 }
+                        )) {
+                            ForEach(SettingsStore.UnfoldTrigger.allCases, id: \.self) { trigger in
+                                Text(trigger.displayName).tag(trigger)
+                            }
+                        }
+                        .labelsHidden()
+                    }
+                }
+            }
+            .padding()
+        }
+    }
+}
+
+// MARK: - Tab 4: Vim Settings View
+
+struct VimSettingsView: View {
+    @ObservedObject var settings: SettingsStore
+    @State private var showCheatsheet = false
+
+    var body: some View {
+        Form {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 8) {
+                    Toggle("Enable Vim-style editing", isOn: Binding(
+                        get: { settings.vimMode },
+                        set: { settings.vimMode = $0 }
+                    ))
+
+                    Button(action: { showCheatsheet.toggle() }) {
+                        Image(systemName: "questionmark.circle")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Show Vim keyboard shortcuts")
+                    .popover(isPresented: $showCheatsheet, arrowEdge: .trailing) {
+                        VimCheatsheetPopover()
+                    }
+                }
+
+                Text("Modal editing in the main editor and Flash Mode with motions, line operations, put, and undo.")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+            .padding()
+        }
+    }
+}
+
+// MARK: - Structured Vim Cheatsheet Popover
+
+struct VimCheatsheetPopover: View {
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Vim Editor Shortcuts")
+                    .font(.headline)
+                    .padding(.bottom, 4)
+
+                Group {
+                    CategoryHeader("Modes & Basic Navigation")
+                    ShortcutGrid([
+                        (["Esc"], "Normal mode"),
+                        (["i", "I", "a", "A"], "Insert: after cursor / line start / after char / line end"),
+                        (["o", "O"], "New line below / above"),
+                        (["h", "j", "k", "l"], "Cursor motions"),
+                        (["w", "b", "e"], "Word motions"),
+                        (["0", "^", "$"], "Line start / first non-blank / line end")
+                    ])
+                }
+
+                Group {
+                    CategoryHeader("Editing & File Navigation")
+                    ShortcutGrid([
+                        (["gg", "G", "\\{n\\}G"], "Document start / end / nth line"),
+                        (["v"], "Visual mode — move to select, then y / d"),
+                        (["x", "X"], "Delete char under / before cursor"),
+                        (["D", "C"], "Delete / change to end of line"),
+                        (["dd", "yy", "p", "P"], "Delete / yank line, paste after / before"),
+                        (["cw", "dw", "d$", "y$"], "Change / delete / yank with a motion"),
+                        (["u"], "Undo (⌘Z also works)")
+                    ])
+                }
+            }
+            .padding()
+        }
+        .frame(width: 420, height: 450)
+    }
+
+    @ViewBuilder
+    private func CategoryHeader(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.caption)
+            .fontWeight(.bold)
+            .foregroundColor(.secondary)
+    }
+}
+
+// MARK: - Grid Alignment Components
+
+struct ShortcutGrid: View {
+    let items: [([String], String)]
+
+    init(_ items: [([String], String)]) {
+        self.items = items
+    }
+
+    var body: some View {
+        if #available(macOS 13.0, *) {
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                ForEach(items, id: \.1) { keys, description in
+                    GridRow {
+                        keyBadges(keys)
+                            .gridColumnAlignment(.trailing)
+
+                        Text(description)
+                            .font(.body)
+                            .foregroundColor(.primary)
+                    }
+                }
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(items, id: \.1) { keys, description in
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        keyBadges(keys)
+                            .frame(width: 140, alignment: .trailing)
+
+                        Text(description)
+                            .font(.body)
+                            .foregroundColor(.primary)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func keyBadges(_ keys: [String]) -> some View {
+        HStack(spacing: 3) {
+            ForEach(keys, id: \.self) { key in
+                Text(key)
+                    .font(.system(.subheadline, design: .monospaced))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(Color(NSColor.controlBackgroundColor))
+                    .cornerRadius(4)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(Color(NSColor.separatorColor), lineWidth: 0.5)
+                    )
+            }
+        }
     }
 }
