@@ -89,37 +89,71 @@ final class MathRenderer {
         pdfCache.removeAllObjects()
     }
 
-    /// Render `math` (the body between `$…$` / `$$…$$` / environments) to an
-    /// image tinted `colorHex` (default: the app-wide theme text colour).
-    /// Cache hits call `completion` synchronously on the calling thread;
-    /// misses render off-thread and complete on the main thread.
-    func renderMath(_ math: String, display: Bool,
-                    colorHex: String? = nil,
-                    completion: @escaping (NSImage?) -> Void) {
-        let hex = colorHex ?? Self.currentTextColorHex()
-        let key = Self.key(for: math, display: display, colorHex: hex)
-        if let image = cachedImage(forKey: key) {
-            completion(image)
+    /// One equation to render as part of a batch.
+    struct Item {
+        let key: String
+        let math: String
+        let display: Bool
+        let colorHex: String
+    }
+
+    /// Render several equations in a single pdflatex run — each `Item` becomes
+    /// its own `preview` block and its own page, so the (dominant) TeX startup
+    /// cost is paid once per batch instead of once per equation. Results are
+    /// cached as usual; a dictionary of the *requested* keys → image is
+    /// delivered on the main thread (nil image = that equation failed).
+    /// A failing equation is isolated by bisecting the batch into smaller
+    /// chunks until the good equations render and only the bad one is dropped.
+    func renderBatch(_ items: [Item],
+                     completion: @escaping ([String: NSImage?]) -> Void) {
+        let missing = items.filter { cachedImage(forKey: $0.key) == nil }
+        guard !missing.isEmpty else {
+            var cached: [String: NSImage?] = [:]
+            for item in items { cached[item.key] = cachedImage(forKey: item.key) }
+            DispatchQueue.main.async { completion(cached) }
             return
         }
         work.async { [weak self] in
             guard let self else { return }
             self.renderSlots.wait()
             defer { self.renderSlots.signal() }
-            var image: NSImage?
-            if let (rendered, cg, pdf) = self._render(math, display: display, colorHex: hex) {
-                image = rendered
-                self.cache.setObject(rendered, forKey: key as NSString)
+            var results: [String: NSImage?] = [:]
+            for key in missing.map(\.key) { results[key] = nil }
+            for (key, (image, cg, pdf)) in self.renderBatchIsolating(missing) {
+                self.cache.setObject(image, forKey: key as NSString)
                 self.cgCache.setObject(cg, forKey: key as NSString)
                 self.pdfCache.setObject(pdf, forKey: key as NSString)
+                results[key] = image
             }
-            DispatchQueue.main.async { completion(image) }
+            DispatchQueue.main.async { completion(results) }
         }
+    }
+
+    /// Render a set of items in one pdflatex run, bisecting around failures so
+    /// a single bad equation can't sink its neighbours.
+    private func renderBatchIsolating(_ items: [Item])
+        -> [String: (NSImage, CGImage, PDFDocument)] {
+        var out: [String: (NSImage, CGImage, PDFDocument)] = [:]
+        var stack: [[Item]] = [items]
+        while let chunk = stack.popLast() {
+            if let result = _renderBatch(chunk), result.count == chunk.count {
+                out.merge(result) { _, new in new }
+                continue
+            }
+            if chunk.count > 1 {
+                let mid = chunk.count / 2
+                stack.append(Array(chunk[0..<mid]))
+                stack.append(Array(chunk[mid...]))
+            }
+        }
+        return out
     }
 
     // MARK: - Rendering
 
-    private func _render(_ math: String, display: Bool, colorHex: String) -> (NSImage, CGImage, PDFDocument)? {
+    /// Render each `Item` into its own tightly-cropped page of a single PDF.
+    /// Returns nil if pdflatex fails (the caller bisects to isolate failures).
+    private func _renderBatch(_ items: [Item]) -> [String: (NSImage, CGImage, PDFDocument)]? {
         guard let pdflatex = TeX.findExecutable("pdflatex") else { return nil }
 
         let fm = FileManager.default
@@ -132,8 +166,17 @@ final class MathRenderer {
         // Trim edge whitespace: multi-line display bodies are pulled verbatim
         // from the buffer and must not smuggle blank lines into the `$$…$$`
         // wrapper (a paragraph break inside math is a hard TeX error).
-        let trimmed = math.trimmingCharacters(in: .whitespacesAndNewlines)
-        let body = display ? "$$\n\(trimmed)\n$$" : "$\(trimmed)$"
+        var previews: [String] = []
+        for item in items {
+            let trimmed = item.math.trimmingCharacters(in: .whitespacesAndNewlines)
+            let body = item.display ? "$$\n\(trimmed)\n$$" : "$\(trimmed)$"
+            previews.append("""
+            \\begin{preview}
+            \\color[HTML]{\(item.colorHex)}
+            \(body)
+            \\end{preview}
+            """)
+        }
         let document = """
         \\documentclass{article}
         \\usepackage{amsmath, amssymb}
@@ -141,10 +184,7 @@ final class MathRenderer {
         \\usepackage[active,tightpage]{preview}
         \\pagestyle{empty}
         \\begin{document}
-        \\begin{preview}
-        \\color[HTML]{\(colorHex)}
-        \(body)
-        \\end{preview}
+        \(previews.joined(separator: "\n"))
         \\end{document}
         """
         let texURL = dir.appendingPathComponent("math.tex")
@@ -166,33 +206,40 @@ final class MathRenderer {
         // temp directory is removed in the `defer` below.
         guard let pdfData = try? Data(contentsOf: pdfURL),
               let pdf = PDFDocument(data: pdfData),
-              pdf.pageCount > 0,
-              let page = pdf.page(at: 0) else { return nil }
+              pdf.pageCount >= items.count else { return nil }
 
-        let bounds = page.bounds(for: .mediaBox)
-        guard bounds.width > 0, bounds.height > 0 else { return nil }
-
-        // 6x bitmap for sharpness after the editor scales the image up to its
-        // own font size. The context starts transparent.
+        var results: [String: (NSImage, CGImage, PDFDocument)] = [:]
         let scale = Self.rasterScale
-        let pxW = Int((bounds.width * scale).rounded())
-        let pxH = Int((bounds.height * scale).rounded())
-        guard pxW > 0, pxH > 0,
-              let ctx = CGContext(data: nil, width: pxW, height: pxH,
-                                  bitsPerComponent: 8, bytesPerRow: 0,
-                                  space: CGColorSpaceCreateDeviceRGB(),
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-        else { return nil }
+        for (index, item) in items.enumerated() {
+            guard let page = pdf.page(at: index) else { continue }
+            let bounds = page.bounds(for: .mediaBox)
+            guard bounds.width > 0, bounds.height > 0 else { continue }
 
-        ctx.scaleBy(x: scale, y: scale)
-        ctx.translateBy(x: -bounds.minX, y: -bounds.minY)
-        page.draw(with: .mediaBox, to: ctx)
+            // 6x bitmap for sharpness after the editor scales the image up to
+            // its own font size. The context starts transparent.
+            let pxW = Int((bounds.width * scale).rounded())
+            let pxH = Int((bounds.height * scale).rounded())
+            guard pxW > 0, pxH > 0,
+                  let ctx = CGContext(data: nil, width: pxW, height: pxH,
+                                      bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { continue }
 
-        guard var cg = ctx.makeImage() else { return nil }
-        cg = droppingWhiteBackground(from: cg) ?? cg
-        let image = NSImage(cgImage: cg,
-                            size: NSSize(width: bounds.width, height: bounds.height))
-        return (image, cg, pdf)
+            ctx.scaleBy(x: scale, y: scale)
+            ctx.translateBy(x: -bounds.minX, y: -bounds.minY)
+            page.draw(with: .mediaBox, to: ctx)
+
+            guard var cg = ctx.makeImage() else { continue }
+            cg = droppingWhiteBackground(from: cg) ?? cg
+            let image = NSImage(cgImage: cg,
+                                size: NSSize(width: bounds.width, height: bounds.height))
+            // Cache a single-page PDF per item: the drawing path reads page 0.
+            let single = PDFDocument()
+            single.insert(page, at: 0)
+            results[item.key] = (image, cg, single)
+        }
+        return results.isEmpty ? nil : results
     }
 
     /// If the PDF drew an opaque white page background (some TeX setups do),

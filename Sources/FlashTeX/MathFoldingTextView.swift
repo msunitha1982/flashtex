@@ -205,6 +205,7 @@ final class MathFoldingTextView: VimTextView {
         activeBlock = computeActiveBlock()
         textSnapshot = text as String
         applyHiddenAttributes()
+        requestMissingRenders()
         needsDisplay = true
     }
 
@@ -331,7 +332,7 @@ final class MathFoldingTextView: VimTextView {
                                        colorHex: colorHex)
             if unrenderableKeys.contains(key) { continue }
             guard let image = MathRenderer.shared.cachedImage(forKey: key) else {
-                requestRender(block: block, key: key, colorHex: colorHex)
+                // Still rendering — requestMissingRenders() owns the batch.
                 continue
             }
             if ProcessInfo.processInfo.environment["FLASHTEX_DEBUG_DRAW"] != nil {
@@ -451,16 +452,34 @@ final class MathFoldingTextView: VimTextView {
         MathRenderer.textColorHex(for: effectiveAppearance)
     }
 
-    private func requestRender(block: MathBlock, key: String, colorHex: String) {
-        guard !pendingKeys.contains(key) else { return }
-        pendingKeys.insert(key)
+    /// Batch-render every block that isn't cached, pending or unrenderable in a
+    /// single pdflatex run (see `MathRenderer.renderBatch`). Called on each
+    /// fold pass so newly appearing blocks render in one go.
+    private func requestMissingRenders() {
+        guard foldEnabled else { return }
+        let text = string as NSString
+        let colorHex = currentColorHex()
+        var items: [MathRenderer.Item] = []
+        for block in hiddenBlocks {
+            let range = block.range
+            guard range.location != NSNotFound,
+                  range.location + range.length <= text.length else { continue }
+            let key = MathRenderer.key(for: block.body, display: block.display,
+                                       colorHex: colorHex)
+            guard !pendingKeys.contains(key),
+                  !unrenderableKeys.contains(key),
+                  MathRenderer.shared.cachedImage(forKey: key) == nil else { continue }
+            pendingKeys.insert(key)
+            items.append(MathRenderer.Item(key: key, math: block.body,
+                                           display: block.display, colorHex: colorHex))
+        }
+        guard !items.isEmpty else { return }
         let snapshot = textSnapshot
-        MathRenderer.shared.renderMath(block.body, display: block.display,
-                                       colorHex: colorHex) { [weak self] image in
+        MathRenderer.shared.renderBatch(items) { [weak self] results in
             guard let self else { return }
-            self.pendingKeys.remove(key)
+            for item in items { self.pendingKeys.remove(item.key) }
             guard self.string == snapshot else { return }
-            if image == nil {
+            for (key, image) in results where image == nil {
                 // Couldn't render — leave the raw source visible.
                 self.unrenderableKeys.insert(key)
             }
@@ -502,21 +521,47 @@ final class MathFoldingTextView: VimTextView {
         return nil
     }
 
-    /// Map a click position inside a folded block's image to a character index
-    /// in the raw LaTeX. The horizontal fraction of the click within the image
-    /// is mapped onto the block's body (between the delimiters), so clicking
-    /// the middle of a rendered fraction drops the caret at the middle of its
-    /// source text rather than always at the start.
+    /// Map a click position inside a folded block to a character index in the
+    /// raw LaTeX using the layout manager's real glyph geometry — it respects
+    /// the click's vertical position (so the bottom line of a multi-line
+    /// display equation selects a character on that line, not "above the
+    /// target") and, for inline math, the per-glyph horizontal positions (so a
+    /// click maps to the actual glyph under the cursor instead of a naive
+    /// proportional span).
+    ///
+    /// Display math is drawn centred on its paragraph while the underlying
+    /// glyphs are laid out flush-left, so the click is first re-projected from
+    /// the (centred) image rect onto the raw glyph rect, then hit-tested.
     private func caretLocation(for point: NSPoint, in block: MathBlock, text: NSString) -> Int {
-        let rect = imageRect(for: block)
-        let minX = rect?.minX ?? point.x
-        let width = rect?.width ?? 10
-        let fraction = width > 0 ? min(max((point.x - minX) / width, 0), 1) : 0.5
+        guard let lm = layoutManager, let tc = textContainer else {
+            return bodyStartOffset(for: block, text: text)
+        }
+        let glyphRange = lm.glyphRange(forCharacterRange: block.range,
+                                       actualCharacterRange: nil)
+        guard glyphRange.location != NSNotFound, glyphRange.length > 0 else {
+            return bodyStartOffset(for: block, text: text)
+        }
+        let rawRect = lm.boundingRect(forGlyphRange: glyphRange, in: tc)
+            .offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
+
+        var hit = point
+        if let img = imageRect(for: block),
+           img.width > 0, img.height > 0, rawRect.width > 0, rawRect.height > 0 {
+            // Re-project from the drawn (possibly centred) image back onto the
+            // raw glyph layout.
+            let fx = min(max((point.x - img.minX) / img.width, 0), 1)
+            let fy = min(max((point.y - img.minY) / img.height, 0), 1)
+            hit = NSPoint(x: rawRect.minX + fx * rawRect.width,
+                          y: rawRect.minY + fy * rawRect.height)
+        }
+
+        let containerPoint = NSPoint(x: hit.x - textContainerOrigin.x,
+                                     y: hit.y - textContainerOrigin.y)
+        let index = lm.characterIndex(for: containerPoint, in: tc,
+                                      fractionOfDistanceBetweenInsertionPoints: nil)
         let bodyStart = bodyStartOffset(for: block, text: text)
         let blockEnd = min(block.range.location + block.range.length, text.length)
-        let span = max(1, blockEnd - 1 - bodyStart)
-        let caret = bodyStart + Int((fraction * CGFloat(span)).rounded())
-        return min(max(caret, bodyStart), max(bodyStart, blockEnd - 1))
+        return min(max(index, bodyStart), max(bodyStart, blockEnd - 1))
     }
 
     /// Character index just past the opening delimiter of a block.
@@ -599,8 +644,16 @@ final class MathFoldingTextView: VimTextView {
     override func setSelectedRange(_ charRange: NSRange,
                                    affinity: NSSelectionAffinity,
                                    stillSelecting: Bool) {
+        let old = activeBlock
         super.setSelectedRange(charRange, affinity: affinity, stillSelecting: stillSelecting)
-        if foldEnabled { scheduleRefresh() }
+        guard foldEnabled else { return }
+        let new = computeActiveBlock()
+        if old?.range.location != new?.range.location {
+            // The caret crossed into/out of a block: unfold/fold immediately.
+            refreshFolds()
+        } else {
+            scheduleRefresh()
+        }
     }
 
     override func didChangeText() {
