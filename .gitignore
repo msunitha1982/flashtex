@@ -24,6 +24,7 @@ doc-1.pdf
 
 # Xcode
 # FlashTeX.xcodeproj IS tracked (the project wrapper lives in the repo);
-# only per-user and derived data stay ignored.
+# only per-user, derived data, and regenerated workspace state stay ignored.
 xcuserdata/
 DerivedData/
+FlashTeX.xcodeproj/project.xcworkspace/
