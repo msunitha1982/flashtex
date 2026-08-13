@@ -43,12 +43,16 @@ public struct InlineLookUpPanel: View {
         .padding(.vertical, 9)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.red.opacity(0.32))
+                .fill(.ultraThinMaterial)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.red.opacity(0.5))
+                )
                 .shadow(color: Color.black.opacity(0.28), radius: 10, x: 0, y: 3)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color.red.opacity(0.45), lineWidth: 1)
+                .stroke(Color.red.opacity(0.6), lineWidth: 1)
         )
         .fixedSize(horizontal: true, vertical: false)
     }
