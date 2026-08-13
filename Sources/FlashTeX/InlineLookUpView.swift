@@ -74,7 +74,6 @@ final class ErrorPopoverPane: NSView {
         hostingView = NSHostingView(rootView: InlineLookUpPanel(title: title, text: text, onDismiss: onDismiss))
         super.init(frame: .zero)
         wantsLayer = true
-        hostingView.layerContentsRedrawPolicy = .onSetNeedsDisplay
         hostingView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(hostingView)
         NSLayoutConstraint.activate([
