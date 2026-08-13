@@ -27,6 +27,9 @@
 		BB0000000000000000000012 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000012 /* Theme.swift */; };
 		BB0000000000000000000013 /* VimMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000013 /* VimMode.swift */; };
 		BB0000000000000000000014 /* palette.json in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000015 /* palette.json */; };
+		BB0000000000000000000015 /* Fuse.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000017 /* Fuse.swift */; };
+		BB0000000000000000000016 /* FuseUtilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000018 /* FuseUtilities.swift */; };
+		BB0000000000000000000017 /* String+Fuse.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000019 /* String+Fuse.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -52,6 +55,9 @@
 		AA0000000000000000000014 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AA0000000000000000000015 /* palette.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = palette.json; sourceTree = "<group>"; };
 		AA0000000000000000000016 /* FlashTeX.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FlashTeX.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000017 /* Fuse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Fuse/Fuse.swift; sourceTree = "<group>"; };
+		AA0000000000000000000018 /* FuseUtilities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Fuse/FuseUtilities.swift; sourceTree = "<group>"; };
+		AA0000000000000000000019 /* String+Fuse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Fuse/String+Fuse.swift"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -97,6 +103,9 @@
 				AA0000000000000000000011 /* TeXSupport.swift */,
 				AA0000000000000000000012 /* Theme.swift */,
 				AA0000000000000000000013 /* VimMode.swift */,
+				AA0000000000000000000017 /* Fuse.swift */,
+				AA0000000000000000000018 /* FuseUtilities.swift */,
+				AA0000000000000000000019 /* String+Fuse.swift */,
 			);
 			path = Sources/FlashTeX;
 			sourceTree = "<group>";
@@ -200,6 +209,9 @@
 				BB0000000000000000000011 /* TeXSupport.swift in Sources */,
 				BB0000000000000000000012 /* Theme.swift in Sources */,
 				BB0000000000000000000013 /* VimMode.swift in Sources */,
+				BB0000000000000000000015 /* Fuse.swift in Sources */,
+				BB0000000000000000000016 /* FuseUtilities.swift in Sources */,
+				BB0000000000000000000017 /* String+Fuse.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

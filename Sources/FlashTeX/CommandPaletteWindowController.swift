@@ -8,6 +8,15 @@ import AppKit
 final class CommandPalettePanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
+
+    /// Fired when the panel stops being the key window — i.e. the user clicked
+    /// somewhere else (another window or another app). Used to dismiss the palette.
+    var onResignKey: (() -> Void)?
+
+    override func resignKey() {
+        super.resignKey()
+        onResignKey?()
+    }
 }
 
 public struct PaletteItem: Identifiable, Hashable {
@@ -26,36 +35,20 @@ public struct PaletteItem: Identifiable, Hashable {
     public static func == (lhs: PaletteItem, rhs: PaletteItem) -> Bool {
         lhs.title == rhs.title && lhs.category == rhs.category
     }
+}
 
-    public func fuzzyScore(query: String) -> Double? {
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if q.isEmpty { return nil }
-
-        let t = title.lowercased()
-        let s = subtitle.lowercased()
-        let c = category.lowercased()
-        let i = insertText.lowercased()
-
-        if t.hasPrefix(q) || s.hasPrefix(q) || c.hasPrefix(q) { return 1.0 }
-        if t.contains(q) || s.contains(q) || c.contains(q) || i.contains(q) { return 0.8 }
-
-        if isSubsequence(q, in: t) || isSubsequence(q, in: s) || isSubsequence(q, in: c) || isSubsequence(q, in: i) {
-            return 0.5
-        }
-
-        return nil
-    }
-
-    private func isSubsequence(_ sub: String, in str: String) -> Bool {
-        var subIdx = sub.startIndex
-        var strIdx = str.startIndex
-        while subIdx < sub.endIndex && strIdx < str.endIndex {
-            if sub[subIdx] == str[strIdx] {
-                subIdx = sub.index(after: subIdx)
-            }
-            strIdx = str.index(after: strIdx)
-        }
-        return subIdx == sub.endIndex
+extension PaletteItem: Fuseable {
+    /// Searchable fields for the Fuse fuzzy-search engine.
+    /// Note: Fuse converts each weight to a `1 - weight` multiplier, so a higher
+    /// weight here means MORE influence on the ranking. Title dominates, then
+    /// subtitle, category, and finally the raw inserted TeX.
+    public var properties: [FuseProperty] {
+        [
+            FuseProperty(name: title, weight: 1.0),
+            FuseProperty(name: subtitle, weight: 0.3),
+            FuseProperty(name: category, weight: 0.5),
+            FuseProperty(name: insertText, weight: 0.7)
+        ]
     }
 }
 
@@ -140,18 +133,18 @@ public struct CommandPaletteView: View {
     let onSelect: (PaletteItem) -> Void
     let onCancel: () -> Void
 
+    /// Fuse fuzzy-search engine. `tokenize` splits the query into words so
+    /// multi-word searches (e.g. "matrix braces") match individual words too.
+    private static let fuse = Fuse(threshold: 0.6, tokenize: true)
+
     var filteredItems: [PaletteItem] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             return []
         }
-        return CommandPaletteStore.items
-            .compactMap { item -> (PaletteItem, Double)? in
-                guard let score = item.fuzzyScore(query: trimmed) else { return nil }
-                return (item, score)
-            }
-            .sorted { $0.0.title.localizedCaseInsensitiveCompare($1.0.title) == .orderedAscending }
-            .map { $0.0 }
+        let items = CommandPaletteStore.items
+        let results = Self.fuse.search(trimmed, in: items)
+        return results.map { items[$0.index] }
     }
 
     public var body: some View {
@@ -206,7 +199,11 @@ public struct CommandPaletteView: View {
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(spacing: 2) {
+                        // Eager VStack (not LazyVStack): a lazy stack fails to
+                        // re-layout its rows when the result set changes, which
+                        // left the palette showing stale/blank content at the
+                        // top until the user scrolled it around.
+                        VStack(spacing: 2) {
                             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                                 let isSelected = index == selectedIndex
                                 HStack(spacing: 10) {
@@ -227,6 +224,11 @@ public struct CommandPaletteView: View {
                             }
                         }
                         .padding(6)
+                    }
+                    .onChange(of: query) { _ in
+                        // Jump back to the top result on every keystroke instead
+                        // of keeping the previous query's scroll offset.
+                        proxy.scrollTo(0, anchor: .top)
                     }
                     .onChange(of: selectedIndex) { newIndex in
                         proxy.scrollTo(newIndex, anchor: .center)
@@ -264,6 +266,15 @@ public struct CommandPaletteView: View {
         case 53: // Escape
             onCancel()
             return true
+        case 35: // 'P' — Cmd+Shift+P toggles the palette closed (handled here
+                 // so it works while the palette is key, since the menu item
+                 // can't reach MainWindowController's responder chain then)
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if flags.contains(.command) && flags.contains(.shift) {
+                onCancel()
+                return true
+            }
+            return false
         default:
             return false
         }
@@ -365,6 +376,10 @@ public final class CommandPaletteWindowController: NSWindowController {
 
         super.init(window: panel)
 
+        panel.onResignKey = { [weak self] in
+            self?.closePalette()
+        }
+
         let contentView = CommandPaletteView(
             onSelect: { [weak self] item in
                 self?.insertItem(item)
@@ -409,6 +424,9 @@ public final class CommandPaletteWindowController: NSWindowController {
     }
 
     private func closePalette() {
+        // Guard against re-entrancy: `resignKey` fires again while the window is
+        // closing, and clicking a palette item triggers both insert and close.
+        guard CommandPaletteWindowController.instance === self else { return }
         window?.close()
         CommandPaletteWindowController.instance = nil
     }
