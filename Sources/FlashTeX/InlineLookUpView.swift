@@ -6,11 +6,15 @@ public struct InlineLookUpPanel: View {
     let title: String
     let text: String
     var onDismiss: (() -> Void)?
+    var pointsUp: Bool
+    var arrowOffsetX: CGFloat
 
-    public init(title: String, text: String, onDismiss: (() -> Void)? = nil) {
+    public init(title: String, text: String, onDismiss: (() -> Void)? = nil, pointsUp: Bool = false, arrowOffsetX: CGFloat = 0) {
         self.title = title
         self.text = text
         self.onDismiss = onDismiss
+        self.pointsUp = pointsUp
+        self.arrowOffsetX = arrowOffsetX
     }
 
     public var body: some View {
@@ -54,7 +58,38 @@ public struct InlineLookUpPanel: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(Color.red.opacity(0.6), lineWidth: 1)
         )
+        .overlay(alignment: .bottom) {
+            if !pointsUp {
+                PopupArrow()
+                    .fill(Color.red.opacity(0.5))
+                    .frame(width: 16, height: 9)
+                    .offset(x: arrowOffsetX, y: 5)
+            }
+        }
+        .overlay(alignment: .top) {
+            if pointsUp {
+                PopupArrow()
+                    .fill(Color.red.opacity(0.5))
+                    .frame(width: 16, height: 9)
+                    .rotationEffect(.degrees(180))
+                    .offset(x: arrowOffsetX, y: -5)
+            }
+        }
         .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+/// A small triangle used as a speech-bubble tail on the error popup: points down
+/// when the popup floats above its line, and is rotated 180° (points up) when
+/// the popup is forced below the line.
+struct PopupArrow: Shape {
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        p.move(to: CGPoint(x: rect.midX, y: rect.maxY))
+        p.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
+        p.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        p.closeSubpath()
+        return p
     }
 }
 
@@ -68,6 +103,9 @@ public struct InlineLookUpPanel: View {
 /// view can otherwise draw at 1x and look soft).
 final class ErrorPopoverPane: NSView {
     private let hostingView: NSHostingView<InlineLookUpPanel>
+    private let title: String
+    private let text: String
+    private let onDismiss: () -> Void
 
     var fittingContentSize: NSSize {
         let fitted = hostingView.fittingSize
@@ -75,6 +113,9 @@ final class ErrorPopoverPane: NSView {
     }
 
     init(title: String, text: String, onDismiss: @escaping () -> Void) {
+        self.title = title
+        self.text = text
+        self.onDismiss = onDismiss
         hostingView = NSHostingView(rootView: InlineLookUpPanel(title: title, text: text, onDismiss: onDismiss))
         super.init(frame: .zero)
         wantsLayer = true
@@ -90,6 +131,13 @@ final class ErrorPopoverPane: NSView {
 
     required init?(coder aDecoder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    /// Repoints the popup's tail: `pointsUp` when the popup sits below its line,
+    /// and offsets the tail horizontally so it stays glued to the error's x.
+    func setArrow(pointsUp: Bool, offsetX: CGFloat) {
+        hostingView.rootView = InlineLookUpPanel(title: title, text: text, onDismiss: onDismiss,
+                                                 pointsUp: pointsUp, arrowOffsetX: offsetX)
     }
 
     override func viewDidMoveToWindow() {
