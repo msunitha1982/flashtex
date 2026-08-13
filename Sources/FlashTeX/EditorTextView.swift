@@ -48,6 +48,19 @@ final class EditorTextView: VimTextView {
         }
     }
 
+    /// The text view grows its frame in steps as the layout manager lays out
+    /// the document (a pasted block can jump through many intermediate
+    /// heights). The gutter must track the final height so its strip covers
+    /// the whole document; refreshing on every frame-height change keeps it
+    /// in step even when layout runs after the text-change callback.
+    override func setFrameSize(_ newSize: NSSize) {
+        let oldHeight = frame.height
+        super.setFrameSize(newSize)
+        if newSize.height != oldHeight {
+            onGutterRefresh?()
+        }
+    }
+
     override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
         super.init(frame: frameRect, textContainer: container)
         configure()
