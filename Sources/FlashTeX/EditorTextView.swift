@@ -310,6 +310,7 @@ final class EditorTextView: VimTextView {
                 InlineLookUpPopover.dismiss()
             }
             InlineLookUpPopover.show(title: title, text: text, line: line, anchorRect: anchorRect, of: self, onDismiss: dismissAction)
+            updatePopupVisibilityForCaret()
         } else {
             InlineLookUpPopover.dismiss()
         }
@@ -455,56 +456,51 @@ final class EditorTextView: VimTextView {
         onCursorMoved?()
         // While the caret sits on a line the error popup blocks, keep the popup
         // hidden; the moment the caret leaves, bring it back.
-        updatePopupForCaret()
+        updatePopupVisibilityForCaret()
     }
 
     override func didChangeText() {
         invalidateLineStartsCache()
         super.didChangeText()
         updateGutter()
-        if InlineLookUpPopover.currentLine != nil {
-            if isErrorPopupBlockingCaret() {
-                // The popup blocks the line being edited — hide it. It returns
-                // on the next caret move away from the line.
-                InlineLookUpPopover.hide()
-            } else if let popoverLine = InlineLookUpPopover.currentLine, let anchor = anchorRect(forLine: popoverLine) {
-                // Text above the error moved — keep the popup glued to its line.
-                InlineLookUpPopover.reattach(anchorRect: anchor, of: self)
-            }
-        }
+        updatePopupVisibilityForCaret()
         if !isLoading {
             onTextChanged?()
         }
     }
 
-    /// Whether the caret currently sits on a line covered by the error popup —
-    /// its own error line or the lines it floats over.
-    private func isErrorPopupBlockingCaret() -> Bool {
-        guard InlineLookUpPopover.currentLine != nil else { return false }
-        return popupBlocks(lineNumber(at: selectedRange().location))
-    }
-
     /// Brings a hidden (blocked-by-caret) popup back once the caret leaves the
-    /// blocked line, or keeps a visible one hidden if the caret re-enters.
-    private func updatePopupForCaret() {
-        guard InlineLookUpPopover.currentLine != nil else { return }
-        if isErrorPopupBlockingCaret() {
-            InlineLookUpPopover.hide()
-        } else if InlineLookUpPopover.isHidden,
-                  let popoverLine = InlineLookUpPopover.currentLine,
-                  let anchor = anchorRect(forLine: popoverLine) {
-            InlineLookUpPopover.reattach(anchorRect: anchor, of: self)
+    /// blocked line, or keeps a visible one hidden if the caret enters a blocked line.
+    private func updatePopupVisibilityForCaret() {
+        guard let popoverLine = InlineLookUpPopover.currentLine else { return }
+        let caretLine = lineNumber(at: selectedRange().location)
+        let blocked = isLineBlockedByPopover(caretLine)
+        if blocked {
+            InlineLookUpPopover.setHidden(true)
+        } else {
+            InlineLookUpPopover.setHidden(false)
+            if let anchor = anchorRect(forLine: popoverLine) {
+                InlineLookUpPopover.reposition(anchorRect: anchor, of: self)
+            }
         }
     }
 
-    /// Whether the popup pane currently covers `line` (true for its own error
-    /// line even where the pane floats clear of it).
-    private func popupBlocks(_ line: Int) -> Bool {
-        guard let popoverLine = InlineLookUpPopover.currentLine,
-              let pane = InlineLookUpPopover.activePane else { return false }
+    /// Whether the given line is physically blocked/occluded by the popup pane,
+    /// or is the target error line itself.
+    private func isLineBlockedByPopover(_ line: Int) -> Bool {
+        guard let popoverLine = InlineLookUpPopover.currentLine else { return false }
         if line == popoverLine { return true }
-        guard let anchor = anchorRect(forLine: line) else { return false }
-        return anchor.intersects(pane.frame)
+        guard let pane = InlineLookUpPopover.activePane, let lm = layoutManager else { return false }
+        let lineR = lineRange(forLine: line)
+        guard lineR.length > 0 else { return false }
+        let charLoc = min(lineR.location, (string as NSString).length)
+        let glyphIdx = lm.glyphIndexForCharacter(at: charLoc)
+        guard glyphIdx != NSNotFound else { return false }
+        let frag = lm.lineFragmentRect(forGlyphAt: glyphIdx, effectiveRange: nil)
+        let lineRect = NSRect(x: 0, y: textContainerOrigin.y + frag.minY, width: bounds.width, height: frag.height)
+
+        let paneFrame = pane.frame
+        return lineRect.maxY > paneFrame.minY && lineRect.minY < paneFrame.maxY
     }
 }
 
@@ -515,19 +511,19 @@ public enum InlineLookUpPopover {
     private(set) public static var currentLine: Int?
 
     /// True while a popup exists but has been temporarily hidden (its line is
-    /// being edited). `hide` / `reattach` toggle this state.
+    /// being edited).
     public static var isHidden: Bool {
-        activePane != nil && activePane?.superview == nil
+        activePane?.isHidden ?? true
     }
 
-    /// Shows a persistent popup pane just above `anchorRect`. The rect must be in
-    /// the `host` view's own coordinate space (typically the text view, which is
-    /// the scroll document view), so the pane scrolls with the text and is never
-    /// subject to NSPopover's coordinate-conversion bugs.
-    public static func show(title: String, text: String, line: Int, anchorRect: NSRect, of host: NSView, gap: CGFloat = 8, onDismiss: (() -> Void)? = nil) {
-        // Skip only when a live popup for this line is already on screen; a pane
-        // hidden by editing is re-shown fresh below.
-        if activePane != nil && activePane?.superview != nil && currentLine == line {
+    public static func setHidden(_ hidden: Bool) {
+        activePane?.isHidden = hidden
+    }
+
+    /// Shows a persistent popup pane just above (or below) `anchorRect`.
+    public static func show(title: String, text: String, line: Int, anchorRect: NSRect, of host: NSView, onDismiss: (() -> Void)? = nil) {
+        if activePane != nil && currentLine == line {
+            reposition(anchorRect: anchorRect, of: host)
             return
         }
         dismiss()
@@ -536,34 +532,23 @@ public enum InlineLookUpPopover {
             onDismiss?()
             dismiss()
         })
-        let size = pane.fittingContentSize
-        let (rect, pointsUp) = layout(for: anchorRect, size: size, in: host.bounds, gap: gap)
-        pane.setArrow(pointsUp: pointsUp, offsetX: arrowOffsetX(for: anchorRect, frame: rect))
-        pane.frame = rect
         currentLine = line
-        host.addSubview(pane)
         activePane = pane
+        host.addSubview(pane)
+        reposition(anchorRect: anchorRect, of: host)
     }
 
-    /// Re-anchors an active popup pane, e.g. after the text above it changed.
-    public static func reposition(anchorRect: NSRect, of host: NSView, gap: CGFloat = 8) {
-        reattach(anchorRect: anchorRect, of: host, gap: gap)
-    }
-
-    /// Temporarily removes the popup from its host without forgetting it. It can
-    /// be brought back with `reattach`.
-    public static func hide() {
-        activePane?.removeFromSuperview()
-    }
-
-    /// Puts a previously-hidden popup back, re-anchored to `anchorRect`.
-    public static func reattach(anchorRect: NSRect, of host: NSView, gap: CGFloat = 8) {
+    /// Re-anchors an active popup pane, e.g. after the text above it changed or on scroll.
+    public static func reposition(anchorRect: NSRect, of host: NSView) {
         guard let pane = activePane else { return }
         if pane.superview == nil {
             host.addSubview(pane)
         }
-        let (rect, pointsUp) = layout(for: anchorRect, size: pane.bounds.size, in: host.bounds, gap: gap)
-        pane.setArrow(pointsUp: pointsUp, offsetX: arrowOffsetX(for: anchorRect, frame: rect))
+        let size = pane.fittingContentSize
+        let (rect, pointsUp) = layout(for: anchorRect, size: size, in: host.bounds)
+        // Position arrow tip over the start of the error text
+        let arrowX = anchorRect.minX + 8 - rect.minX
+        pane.update(pointsUp: pointsUp, arrowX: arrowX)
         pane.frame = rect
     }
 
@@ -575,21 +560,13 @@ public enum InlineLookUpPopover {
 
     /// Places the popup just above the anchor (a rect on the error line), flipping
     /// below the line when there is no room above (e.g. an error on line 1).
-    /// Returns the pane frame together with the tail direction (`pointsUp` is true
-    /// when the popup sits below its line).
-    private static func layout(for anchorRect: NSRect, size: NSSize, in hostBounds: NSRect, gap: CGFloat) -> (rect: NSRect, pointsUp: Bool) {
+    /// When above: bottom of popup (arrow tip) touches anchorRect.minY.
+    /// When below: top of popup (arrow tip) touches anchorRect.maxY.
+    private static func layout(for anchorRect: NSRect, size: NSSize, in hostBounds: NSRect) -> (rect: NSRect, pointsUp: Bool) {
         let x = min(max(anchorRect.minX - 4, 2), max(hostBounds.width - size.width - 2, 2))
-        let aboveBottom = anchorRect.minY - gap
-        let pointsUp = aboveBottom - size.height < hostBounds.minY
-        let y = pointsUp ? anchorRect.maxY + gap : aboveBottom - size.height
+        let aboveY = anchorRect.minY - size.height
+        let pointsUp = aboveY < hostBounds.minY
+        let y = pointsUp ? anchorRect.maxY : aboveY
         return (NSRect(x: x, y: y, width: size.width, height: size.height), pointsUp)
-    }
-
-    /// Horizontal offset (from the popup's centre) that keeps the tail pointing
-    /// at the error's x position, clamped so it stays on the popup.
-    private static func arrowOffsetX(for anchorRect: NSRect, frame: NSRect) -> CGFloat {
-        let mid = anchorRect.midX - frame.midX
-        let limit = frame.width / 2 - 8
-        return min(max(mid, -limit), limit)
     }
 }

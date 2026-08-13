@@ -50,6 +50,8 @@ final class MainWindowController: NSWindowController {
         applyToolbarState()
         wireCompiler()
         loadWelcomeDocument()
+        window.initialFirstResponder = editor
+        window.makeFirstResponder(editor)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

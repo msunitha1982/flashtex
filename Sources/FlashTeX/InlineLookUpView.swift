@@ -2,19 +2,85 @@ import SwiftUI
 import AppKit
 
 // MARK: - Custom Inline Look Up Panel
+
+/// A unified speech-bubble / callout shape that renders a rounded rectangle
+/// with an integrated triangular arrow extending from either the bottom or top edge.
+public struct CalloutBubbleShape: Shape {
+    var pointsUp: Bool
+    var arrowX: CGFloat
+    var cornerRadius: CGFloat = 10
+    var arrowWidth: CGFloat = 14
+    var arrowHeight: CGFloat = 7
+
+    public func path(in rect: CGRect) -> Path {
+        var p = Path()
+        let r = cornerRadius
+        let aw = arrowWidth
+        let ah = arrowHeight
+        let tipX = min(max(arrowX, rect.minX + r + aw/2), rect.maxX - r - aw/2)
+        let leftBaseX = tipX - aw/2
+        let rightBaseX = tipX + aw/2
+
+        if pointsUp {
+            // Arrow at top pointing up towards line above
+            let bodyTop = rect.minY + ah
+            let bodyBottom = rect.maxY
+            p.move(to: CGPoint(x: rect.minX + r, y: bodyTop))
+            p.addLine(to: CGPoint(x: leftBaseX, y: bodyTop))
+            p.addLine(to: CGPoint(x: tipX, y: rect.minY))
+            p.addLine(to: CGPoint(x: rightBaseX, y: bodyTop))
+            p.addLine(to: CGPoint(x: rect.maxX - r, y: bodyTop))
+            p.addArc(center: CGPoint(x: rect.maxX - r, y: bodyTop + r), radius: r,
+                     startAngle: .degrees(-90), endAngle: .degrees(0), clockwise: false)
+            p.addLine(to: CGPoint(x: rect.maxX, y: bodyBottom - r))
+            p.addArc(center: CGPoint(x: rect.maxX - r, y: bodyBottom - r), radius: r,
+                     startAngle: .degrees(0), endAngle: .degrees(90), clockwise: false)
+            p.addLine(to: CGPoint(x: rect.minX + r, y: bodyBottom))
+            p.addArc(center: CGPoint(x: rect.minX + r, y: bodyBottom - r), radius: r,
+                     startAngle: .degrees(90), endAngle: .degrees(180), clockwise: false)
+            p.addLine(to: CGPoint(x: rect.minX, y: bodyTop + r))
+            p.addArc(center: CGPoint(x: rect.minX + r, y: bodyTop + r), radius: r,
+                     startAngle: .degrees(180), endAngle: .degrees(270), clockwise: false)
+            p.closeSubpath()
+        } else {
+            // Arrow at bottom pointing down towards error line
+            let bodyTop = rect.minY
+            let bodyBottom = rect.maxY - ah
+            p.move(to: CGPoint(x: rect.minX + r, y: bodyTop))
+            p.addLine(to: CGPoint(x: rect.maxX - r, y: bodyTop))
+            p.addArc(center: CGPoint(x: rect.maxX - r, y: bodyTop + r), radius: r,
+                     startAngle: .degrees(-90), endAngle: .degrees(0), clockwise: false)
+            p.addLine(to: CGPoint(x: rect.maxX, y: bodyBottom - r))
+            p.addArc(center: CGPoint(x: rect.maxX - r, y: bodyBottom - r), radius: r,
+                     startAngle: .degrees(0), endAngle: .degrees(90), clockwise: false)
+            p.addLine(to: CGPoint(x: rightBaseX, y: bodyBottom))
+            p.addLine(to: CGPoint(x: tipX, y: rect.maxY))
+            p.addLine(to: CGPoint(x: leftBaseX, y: bodyBottom))
+            p.addLine(to: CGPoint(x: rect.minX + r, y: bodyBottom))
+            p.addArc(center: CGPoint(x: rect.minX + r, y: bodyBottom - r), radius: r,
+                     startAngle: .degrees(90), endAngle: .degrees(180), clockwise: false)
+            p.addLine(to: CGPoint(x: rect.minX, y: bodyTop + r))
+            p.addArc(center: CGPoint(x: rect.minX + r, y: bodyTop + r), radius: r,
+                     startAngle: .degrees(180), endAngle: .degrees(270), clockwise: false)
+            p.closeSubpath()
+        }
+        return p
+    }
+}
+
 public struct InlineLookUpPanel: View {
     let title: String
     let text: String
     var onDismiss: (() -> Void)?
     var pointsUp: Bool
-    var arrowOffsetX: CGFloat
+    var arrowX: CGFloat
 
-    public init(title: String, text: String, onDismiss: (() -> Void)? = nil, pointsUp: Bool = false, arrowOffsetX: CGFloat = 0) {
+    public init(title: String, text: String, onDismiss: (() -> Void)? = nil, pointsUp: Bool = false, arrowX: CGFloat = 30) {
         self.title = title
         self.text = text
         self.onDismiss = onDismiss
         self.pointsUp = pointsUp
-        self.arrowOffsetX = arrowOffsetX
+        self.arrowX = arrowX
     }
 
     public var body: some View {
@@ -44,52 +110,22 @@ public struct InlineLookUpPanel: View {
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 9)
+        .padding(.top, pointsUp ? 7 + 9 : 9)
+        .padding(.bottom, pointsUp ? 9 : 7 + 9)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            CalloutBubbleShape(pointsUp: pointsUp, arrowX: arrowX)
                 .fill(.ultraThinMaterial)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.red.opacity(0.5))
+                    CalloutBubbleShape(pointsUp: pointsUp, arrowX: arrowX)
+                        .fill(Color.red.opacity(0.55))
                 )
-                .shadow(color: Color.black.opacity(0.28), radius: 10, x: 0, y: 3)
+                .shadow(color: Color.black.opacity(0.28), radius: 8, x: 0, y: 3)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color.red.opacity(0.6), lineWidth: 1)
+            CalloutBubbleShape(pointsUp: pointsUp, arrowX: arrowX)
+                .stroke(Color.red.opacity(0.65), lineWidth: 1)
         )
-        .overlay(alignment: .bottom) {
-            if !pointsUp {
-                PopupArrow()
-                    .fill(Color.red.opacity(0.5))
-                    .frame(width: 16, height: 9)
-                    .offset(x: arrowOffsetX, y: 5)
-            }
-        }
-        .overlay(alignment: .top) {
-            if pointsUp {
-                PopupArrow()
-                    .fill(Color.red.opacity(0.5))
-                    .frame(width: 16, height: 9)
-                    .rotationEffect(.degrees(180))
-                    .offset(x: arrowOffsetX, y: -5)
-            }
-        }
         .fixedSize(horizontal: true, vertical: false)
-    }
-}
-
-/// A small triangle used as a speech-bubble tail on the error popup: points down
-/// when the popup floats above its line, and is rotated 180° (points up) when
-/// the popup is forced below the line.
-struct PopupArrow: Shape {
-    func path(in rect: CGRect) -> Path {
-        var p = Path()
-        p.move(to: CGPoint(x: rect.midX, y: rect.maxY))
-        p.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
-        p.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
-        p.closeSubpath()
-        return p
     }
 }
 
@@ -97,26 +133,24 @@ struct PopupArrow: Shape {
 /// `InlineLookUpPanel`. Living inside the document view means it scrolls with the
 /// text and is positioned in the editor's own coordinate space — no NSPopover, no
 /// screen-coordinate conversion, none of the placement bugs that plague popovers.
-///
-/// The pane is explicitly layer-backed at the window's backing scale so the
-/// SwiftUI content renders crisply at Retina (an un-backd subview inside a text
-/// view can otherwise draw at 1x and look soft).
 final class ErrorPopoverPane: NSView {
     private let hostingView: NSHostingView<InlineLookUpPanel>
     private let title: String
     private let text: String
     private let onDismiss: () -> Void
+    private var pointsUp: Bool = false
+    private var arrowX: CGFloat = 30
 
     var fittingContentSize: NSSize {
         let fitted = hostingView.fittingSize
-        return NSSize(width: min(max(fitted.width, 180), 480), height: max(fitted.height, 32))
+        return NSSize(width: min(max(fitted.width, 180), 480), height: max(fitted.height, 38))
     }
 
     init(title: String, text: String, onDismiss: @escaping () -> Void) {
         self.title = title
         self.text = text
         self.onDismiss = onDismiss
-        hostingView = NSHostingView(rootView: InlineLookUpPanel(title: title, text: text, onDismiss: onDismiss))
+        hostingView = NSHostingView(rootView: InlineLookUpPanel(title: title, text: text, onDismiss: onDismiss, pointsUp: false, arrowX: 30))
         super.init(frame: .zero)
         wantsLayer = true
         hostingView.translatesAutoresizingMaskIntoConstraints = false
@@ -133,18 +167,16 @@ final class ErrorPopoverPane: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    /// Repoints the popup's tail: `pointsUp` when the popup sits below its line,
-    /// and offsets the tail horizontally so it stays glued to the error's x.
-    func setArrow(pointsUp: Bool, offsetX: CGFloat) {
+    /// Repoints the popup's callout arrow and offsets the arrow tip to match the error's x position.
+    func update(pointsUp: Bool, arrowX: CGFloat) {
+        self.pointsUp = pointsUp
+        self.arrowX = arrowX
         hostingView.rootView = InlineLookUpPanel(title: title, text: text, onDismiss: onDismiss,
-                                                 pointsUp: pointsUp, arrowOffsetX: offsetX)
+                                                 pointsUp: pointsUp, arrowX: arrowX)
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        // Keep the backing layer at the display's pixel density (2x Retina,
-        // 3x on the newer screens) instead of AppKit's default 1x for a
-        // non-layer-backed parent.
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         layer?.contentsScale = scale
         hostingView.layer?.contentsScale = scale
