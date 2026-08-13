@@ -14,42 +14,43 @@ public struct InlineLookUpPanel: View {
     }
 
     public var body: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .center, spacing: 10) {
             if let onDismiss = onDismiss {
                 Button(action: onDismiss) {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.system(size: 12, weight: .regular))
                         .foregroundColor(Color(NSColor.tertiaryLabelColor))
                 }
                 .buttonStyle(.plain)
                 .help("Dismiss popup")
+                .accessibilityLabel("Dismiss popup")
             }
 
-            Text(title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundColor(Color(NSColor.labelColor))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Color(NSColor.labelColor))
+                    .fixedSize(horizontal: false, vertical: true)
 
-            Divider()
-                .frame(height: 16)
-
-            Text(text)
-                .font(.subheadline)
-                .foregroundColor(Color(NSColor.secondaryLabelColor))
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
+                Text(text)
+                    .font(.system(size: 12))
+                    .foregroundColor(Color(NSColor.secondaryLabelColor))
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
         .background(
-            RoundedRectangle(cornerRadius: 9)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color(nsColor: .windowBackgroundColor))
-                .shadow(color: Color.black.opacity(0.35), radius: 6, x: 0, y: 2)
+                .shadow(color: Color.black.opacity(0.28), radius: 10, x: 0, y: 3)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 9)
-                .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.8), lineWidth: 1)
         )
-        .fixedSize()
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 
@@ -57,6 +58,10 @@ public struct InlineLookUpPanel: View {
 /// `InlineLookUpPanel`. Living inside the document view means it scrolls with the
 /// text and is positioned in the editor's own coordinate space — no NSPopover, no
 /// screen-coordinate conversion, none of the placement bugs that plague popovers.
+///
+/// The pane is explicitly layer-backed at the window's backing scale so the
+/// SwiftUI content renders crisply at Retina (an un-backd subview inside a text
+/// view can otherwise draw at 1x and look soft).
 final class ErrorPopoverPane: NSView {
     private let hostingView: NSHostingView<InlineLookUpPanel>
 
@@ -68,6 +73,8 @@ final class ErrorPopoverPane: NSView {
     init(title: String, text: String, onDismiss: @escaping () -> Void) {
         hostingView = NSHostingView(rootView: InlineLookUpPanel(title: title, text: text, onDismiss: onDismiss))
         super.init(frame: .zero)
+        wantsLayer = true
+        hostingView.layerContentsRedrawPolicy = .onSetNeedsDisplay
         hostingView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(hostingView)
         NSLayoutConstraint.activate([
@@ -80,6 +87,16 @@ final class ErrorPopoverPane: NSView {
 
     required init?(coder aDecoder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // Keep the backing layer at the display's pixel density (2x Retina,
+        // 3x on the newer screens) instead of AppKit's default 1x for a
+        // non-layer-backed parent.
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        layer?.contentsScale = scale
+        hostingView.layer?.contentsScale = scale
     }
 }
 
