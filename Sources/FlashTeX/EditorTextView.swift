@@ -222,8 +222,14 @@ final class EditorTextView: VimTextView {
         for issue in issues where issue.line > 0 {
             newMap[issue.line] = issue
         }
+
+        // Forget user-dismissed lines only when the error set actually changes.
+        // Otherwise a debounced auto-recompile with identical errors would
+        // instantly resurrect a popup the user just dismissed by editing.
+        if !sameIssues(newMap, diagnostics) {
+            dismissedLines.removeAll()
+        }
         diagnostics = newMap
-        dismissedLines.removeAll()
 
         guard let storage = textStorage else { return }
         let fullRange = NSRange(location: 0, length: storage.length)
@@ -245,6 +251,14 @@ final class EditorTextView: VimTextView {
         updateInlinePopover()
     }
 
+    private func sameIssues(_ a: [Int: LatexIssue], _ b: [Int: LatexIssue]) -> Bool {
+        guard a.count == b.count else { return false }
+        for (line, issue) in a {
+            guard let other = b[line], other.message == issue.message else { return false }
+        }
+        return true
+    }
+
     func lineRange(forLine line: Int) -> NSRange {
         let starts = lineStarts()
         guard line >= 1, line <= starts.count else { return NSRange(location: 0, length: 0) }
@@ -255,7 +269,7 @@ final class EditorTextView: VimTextView {
 
     func updateInlinePopover() {
         guard let lm = layoutManager else {
-            InlineLookUpPopover.dismiss(force: false)
+            InlineLookUpPopover.dismiss()
             return
         }
         let charIdx = selectedRange().location
@@ -287,10 +301,10 @@ final class EditorTextView: VimTextView {
             
             InlineLookUpPopover.show(title: title, text: text, line: line, relativeTo: anchorRect, of: self) { [weak self] in
                 self?.dismissedLines.insert(line)
-                InlineLookUpPopover.dismiss(force: true)
+                InlineLookUpPopover.dismiss()
             }
         } else {
-            InlineLookUpPopover.dismiss(force: false)
+            InlineLookUpPopover.dismiss()
         }
     }
 
@@ -416,14 +430,25 @@ final class EditorTextView: VimTextView {
         super.setSelectedRange(charRange, affinity: affinity, stillSelecting: stillSelecting)
         needsDisplay = true
         onCursorMoved?()
-        updateInlinePopover()
+        // The error popover is deliberately NOT re-anchored or dismissed here:
+        // it stays put until a recompile or until the user edits the line it covers.
     }
 
     override func didChangeText() {
         invalidateLineStartsCache()
         super.didChangeText()
         updateGutter()
-        InlineLookUpPopover.dismiss(force: false)
+        if let popoverLine = InlineLookUpPopover.currentLine {
+            let editedNS = selectedRange()
+            let popoverNS = lineRange(forLine: popoverLine)
+            // The popup blocks its own line (plus the region just above it, where
+            // it floats). If the user starts editing there, dismiss it for good.
+            if lineNumber(at: editedNS.location) == popoverLine
+                || (editedNS.length > 0 && NSMaxRange(popoverNS) > editedNS.location && NSMaxRange(editedNS) > popoverNS.location) {
+                dismissedLines.insert(popoverLine)
+                InlineLookUpPopover.dismiss()
+            }
+        }
         if !isLoading {
             onTextChanged?()
         }
@@ -435,30 +460,25 @@ final class EditorTextView: VimTextView {
 public enum InlineLookUpPopover {
     private static var activePopover: NSPopover?
     private(set) public static var currentLine: Int?
-    public static var isPinned: Bool = false
 
+    /// Shows a persistent popover anchored to the given rect. The popover stays
+    /// visible (`.applicationDefined`, so outside clicks don't dismiss it) until
+    /// it is explicitly dismissed — on recompile, when the user edits the line
+    /// it covers, or via the close button.
     public static func show(title: String, text: String, line: Int, relativeTo rect: NSRect, of view: NSView, preferredEdge: NSRectEdge = .maxY, onDismiss: (() -> Void)? = nil) {
         if activePopover != nil && currentLine == line {
             return
         }
-        dismiss(force: true)
+        dismiss()
 
         let popover = NSPopover()
-        popover.behavior = isPinned ? .applicationDefined : .semitransient
+        popover.behavior = .applicationDefined
         popover.animates = true
         currentLine = line
 
-        let isPinnedBinding = Binding<Bool>(
-            get: { isPinned },
-            set: { newValue in
-                isPinned = newValue
-                popover.behavior = newValue ? .applicationDefined : .semitransient
-            }
-        )
-
-        let content = InlineLookUpPanel(title: title, text: text, isPinned: isPinnedBinding, onDismiss: {
+        let content = InlineLookUpPanel(title: title, text: text, onDismiss: {
             onDismiss?()
-            dismiss(force: true)
+            dismiss()
         })
         let hosting = NSHostingController(rootView: content)
         popover.contentViewController = hosting
@@ -466,11 +486,9 @@ public enum InlineLookUpPopover {
         activePopover = popover
     }
 
-    public static func dismiss(force: Bool = false) {
-        if isPinned && !force { return }
+    public static func dismiss() {
         activePopover?.close()
         activePopover = nil
         currentLine = nil
-        if force { isPinned = false }
     }
 }

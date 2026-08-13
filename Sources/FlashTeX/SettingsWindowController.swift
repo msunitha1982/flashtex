@@ -293,7 +293,7 @@ struct EditorSettingsView: View {
     ]
 
     var body: some View {
-        Form {
+        ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 FormRow("Font Family") {
                     Picker("", selection: Binding(
@@ -495,7 +495,7 @@ struct VimSettingsView: View {
     @State private var showCheatsheet = false
 
     var body: some View {
-        Form {
+        ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(spacing: 8) {
                     Toggle("Enable Vim-style editing", isOn: Binding(

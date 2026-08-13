@@ -297,6 +297,7 @@ final class MainWindowController: NSWindowController {
         if report.success, let pdfURL = report.pdfURL {
             lastPdfURL = pdfURL
             currentErrors = []
+            editor.updateDiagnostics([])
             preview.load(pdfURL: pdfURL)
             removeErrorToolbarItem()
             statusLabel.stringValue = "Rendered in \(report.elapsedMs) ms"
@@ -305,6 +306,9 @@ final class MainWindowController: NSWindowController {
         }
 
         currentErrors = report.errors
+        // Feed the errors into the editor so problem lines get their dotted
+        // underline and the inline error popover is shown at the error line.
+        editor.updateDiagnostics(currentErrors)
         insertErrorToolbarItem()
         if currentErrors.isEmpty && !report.engineMessage.isEmpty {
             // A setup-level failure (e.g. engine not installed): surface the
