@@ -284,28 +284,38 @@ final class EditorTextView: VimTextView {
         }
 
         if let line = lineToShow, let issue = diagnostics[line], !dismissedLines.contains(line) {
-            let lineR = lineRange(forLine: line)
-            let charLoc = min(lineR.location, (string as NSString).length)
-            let glyphIdx = lm.glyphIndexForCharacter(at: charLoc)
-            guard glyphIdx != NSNotFound else { return }
-            let lineFrag = lm.lineFragmentRect(forGlyphAt: glyphIdx, effectiveRange: nil)
-            
-            // Anchor popover to a small 20pt rect at the start of the error line
-            let anchorRect = NSRect(x: textContainerOrigin.x + lineFrag.minX + 8,
-                                    y: textContainerOrigin.y + lineFrag.minY,
-                                    width: 20,
-                                    height: lineFrag.height)
-            
+            guard let anchorRect = anchorRect(forLine: line) else {
+                InlineLookUpPopover.dismiss()
+                return
+            }
+
             let title = issue.message.localizedCaseInsensitiveContains("warning") ? "TeX Warning (Line \(line))" : "TeX Error (Line \(line))"
             let text = issue.message + (issue.hint.isEmpty ? "" : " — " + issue.hint)
-            
-            InlineLookUpPopover.show(title: title, text: text, line: line, relativeTo: anchorRect, of: self) { [weak self] in
+
+            let dismissAction: () -> Void = { [weak self] in
                 self?.dismissedLines.insert(line)
                 InlineLookUpPopover.dismiss()
             }
+            InlineLookUpPopover.show(title: title, text: text, line: line, anchorRect: anchorRect, of: self, onDismiss: dismissAction)
         } else {
             InlineLookUpPopover.dismiss()
         }
+    }
+
+    /// The on-screen frame of the given line, in this text view's own coordinate
+    /// space (so subviews of the text view stay glued to the line while scrolling).
+    func anchorRect(forLine line: Int) -> NSRect? {
+        guard let lm = layoutManager else { return nil }
+        let lineR = lineRange(forLine: line)
+        guard lineR.length > 0 else { return nil }
+        let charLoc = min(lineR.location, (string as NSString).length)
+        let glyphIdx = lm.glyphIndexForCharacter(at: charLoc)
+        guard glyphIdx != NSNotFound else { return nil }
+        let lineFrag = lm.lineFragmentRect(forGlyphAt: glyphIdx, effectiveRange: nil)
+        return NSRect(x: textContainerOrigin.x + lineFrag.minX,
+                      y: textContainerOrigin.y + lineFrag.minY,
+                      width: 20,
+                      height: lineFrag.height)
     }
 
     func gutterWidth() -> CGFloat {
@@ -447,6 +457,9 @@ final class EditorTextView: VimTextView {
                 || (editedNS.length > 0 && NSMaxRange(popoverNS) > editedNS.location && NSMaxRange(editedNS) > popoverNS.location) {
                 dismissedLines.insert(popoverLine)
                 InlineLookUpPopover.dismiss()
+            } else if let anchor = anchorRect(forLine: popoverLine) {
+                // Text above the error moved — keep the popup glued to its line.
+                InlineLookUpPopover.reposition(anchorRect: anchor, of: self)
             }
         }
         if !isLoading {
@@ -455,40 +468,51 @@ final class EditorTextView: VimTextView {
     }
 }
 
-// MARK: - AppKit Popover Integration Helper
+// MARK: - AppKit Error Popup Helper
 
 public enum InlineLookUpPopover {
-    private static var activePopover: NSPopover?
+    private static weak var activePane: ErrorPopoverPane?
     private(set) public static var currentLine: Int?
 
-    /// Shows a persistent popover anchored to the given rect. The popover stays
-    /// visible (`.applicationDefined`, so outside clicks don't dismiss it) until
-    /// it is explicitly dismissed — on recompile, when the user edits the line
-    /// it covers, or via the close button.
-    public static func show(title: String, text: String, line: Int, relativeTo rect: NSRect, of view: NSView, preferredEdge: NSRectEdge = .maxY, onDismiss: (() -> Void)? = nil) {
-        if activePopover != nil && currentLine == line {
+    /// Shows a persistent popup pane just above `anchorRect`. The rect must be in
+    /// the `host` view's own coordinate space (typically the text view, which is
+    /// the scroll document view), so the pane scrolls with the text and is never
+    /// subject to NSPopover's coordinate-conversion bugs.
+    public static func show(title: String, text: String, line: Int, anchorRect: NSRect, of host: NSView, gap: CGFloat = 8, onDismiss: (() -> Void)? = nil) {
+        if activePane != nil && currentLine == line {
             return
         }
         dismiss()
 
-        let popover = NSPopover()
-        popover.behavior = .applicationDefined
-        popover.animates = true
-        currentLine = line
-
-        let content = InlineLookUpPanel(title: title, text: text, onDismiss: {
+        let pane = ErrorPopoverPane(title: title, text: text, onDismiss: {
             onDismiss?()
             dismiss()
         })
-        let hosting = NSHostingController(rootView: content)
-        popover.contentViewController = hosting
-        popover.show(relativeTo: rect, of: view, preferredEdge: preferredEdge)
-        activePopover = popover
+        pane.frame = frame(for: anchorRect, size: pane.fittingContentSize, in: host.bounds, gap: gap)
+        currentLine = line
+        host.addSubview(pane)
+        activePane = pane
+    }
+
+    /// Re-anchors an active popup pane, e.g. after the text above it changed.
+    public static func reposition(anchorRect: NSRect, of host: NSView, gap: CGFloat = 8) {
+        guard let pane = activePane else { return }
+        pane.frame = frame(for: anchorRect, size: pane.bounds.size, in: host.bounds, gap: gap)
     }
 
     public static func dismiss() {
-        activePopover?.close()
-        activePopover = nil
+        activePane?.removeFromSuperview()
+        activePane = nil
         currentLine = nil
+    }
+
+    /// Places the popup just above the anchor (a rect on the error line), flipping
+    /// below the line when there is no room above (e.g. an error on line 1).
+    private static func frame(for anchorRect: NSRect, size: NSSize, in hostBounds: NSRect, gap: CGFloat) -> NSRect {
+        let x = min(max(anchorRect.minX - 4, 2), max(hostBounds.width - size.width - 2, 2))
+        let aboveBottom = anchorRect.minY - gap
+        let flipped = aboveBottom - size.height < hostBounds.minY
+        let y = flipped ? anchorRect.maxY + gap : aboveBottom - size.height
+        return NSRect(x: x, y: y, width: size.width, height: size.height)
     }
 }

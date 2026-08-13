@@ -36,10 +36,50 @@ public struct InlineLookUpPanel: View {
                 .font(.subheadline)
                 .foregroundColor(Color(NSColor.secondaryLabelColor))
                 .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 9)
+                .fill(Color(nsColor: .windowBackgroundColor))
+                .shadow(color: Color.black.opacity(0.35), radius: 6, x: 0, y: 2)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9)
+                .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
+        )
         .fixedSize()
+    }
+}
+
+/// An in-editor error popup pane: an `NSTextView` subview that hosts the
+/// `InlineLookUpPanel`. Living inside the document view means it scrolls with the
+/// text and is positioned in the editor's own coordinate space — no NSPopover, no
+/// screen-coordinate conversion, none of the placement bugs that plague popovers.
+final class ErrorPopoverPane: NSView {
+    private let hostingView: NSHostingView<InlineLookUpPanel>
+
+    var fittingContentSize: NSSize {
+        let fitted = hostingView.fittingSize
+        return NSSize(width: min(max(fitted.width, 180), 480), height: max(fitted.height, 32))
+    }
+
+    init(title: String, text: String, onDismiss: @escaping () -> Void) {
+        hostingView = NSHostingView(rootView: InlineLookUpPanel(title: title, text: text, onDismiss: onDismiss))
+        super.init(frame: .zero)
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(hostingView)
+        NSLayoutConstraint.activate([
+            hostingView.topAnchor.constraint(equalTo: topAnchor),
+            hostingView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            hostingView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            hostingView.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
+    }
+
+    required init?(coder aDecoder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 }
 
