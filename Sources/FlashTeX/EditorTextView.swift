@@ -463,7 +463,8 @@ final class EditorTextView: VimTextView {
             super.insertText(insertString, replacementRange: replacementRange)
             return
         }
-        if s == "\t" {                       // soft-indent tab
+        if s == "\t" {                       // soft-indent tab, or snippet trigger
+            if expandSnippet() { return }
             super.insertText("    ", replacementRange: replacementRange)
             return
         }
@@ -479,15 +480,98 @@ final class EditorTextView: VimTextView {
         if let close = pairs[s] {
             super.insertText(s + close, replacementRange: replacementRange)
             setSelectedRange(NSRange(location: loc + 1, length: 0))
+            maybeCloseEnvironment()
             return
         }
         if pairs.values.contains(s),
            loc < ns.length,
            ns.character(at: loc) == (s as NSString).character(at: 0) {
             setSelectedRange(NSRange(location: loc + 1, length: 0))   // skip over the pair
+            maybeCloseEnvironment()
             return
         }
         super.insertText(insertString, replacementRange: replacementRange)
+        maybeCloseEnvironment()
+    }
+
+    // =====================================================================
+    //  Snippet engine
+    // =====================================================================
+
+    /// Tab triggers: if the word immediately before the caret is a known
+    /// snippet (frame, align, table, matrix, …), replace it with a complete
+    /// `\begin{env}` / `\end{env}` block and put the caret on the blank line.
+    private func expandSnippet() -> Bool {
+        let ns = string as NSString
+        let caret = selectedRange().location
+        guard caret > 0 else { return false }
+
+        var start = caret
+        while start > 0 {
+            let c = ns.character(at: start - 1)
+            if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) {   // A-Z / a-z
+                start -= 1
+            } else {
+                break
+            }
+        }
+        guard start < caret else { return false }
+        let word = ns.substring(with: NSRange(location: start, length: caret - start))
+        guard let env = LatexStructure.snippetEnvironments[word] else { return false }
+
+        let block = "\\begin{\(env)}\n\n\\end{\(env)}"
+        let range = NSRange(location: start, length: caret - start)
+        undoManager?.setActionName("Insert \(env) block")
+        if shouldChangeText(in: range, replacementString: block) {
+            textStorage?.replaceCharacters(in: range, with: block)
+            didChangeText()
+        }
+        // Caret on the blank line between the delimiters.
+        let innerStart = start + ("\\begin{\(env)}\n" as NSString).length
+        setSelectedRange(NSRange(location: innerStart, length: 0))
+        return true
+    }
+
+    /// Auto-close: when the caret lands right after a freshly typed
+    /// `\begin{env}` that isn't matched yet, append `\n\end{env}` and place the
+    /// caret on the blank line between them.
+    private func maybeCloseEnvironment() {
+        let ns = string as NSString
+        let caret = selectedRange().location
+        guard caret >= 8 else { return }
+        let prefix = ns.substring(with: NSRange(location: 0, length: caret))
+        let pattern = #"\\begin\{([A-Za-z]+)\}$"#
+        guard let re = try? NSRegularExpression(pattern: pattern),
+              let m = re.firstMatch(in: prefix, range: NSRange(location: 0, length: (prefix as NSString).length)) else { return }
+        let name = (prefix as NSString).substring(with: m.range(at: 1))
+
+        // Only close when the document still has an unmatched open for this
+        // environment — re-opening an already-closed name shouldn't duplicate
+        // its \end.
+        let full = string as NSString
+        let all = full as String
+        let beginCount = occurrences(of: "\\begin{\(name)}", in: all)
+        let endCount = occurrences(of: "\\end{\(name)}", in: all)
+        guard beginCount > endCount else { return }
+
+        let insertion = "\n\\end{\(name)}"
+        let at = NSRange(location: caret, length: 0)
+        undoManager?.setActionName("Auto-close \(name)")
+        if shouldChangeText(in: at, replacementString: insertion) {
+            textStorage?.replaceCharacters(in: at, with: insertion)
+            didChangeText()
+        }
+        setSelectedRange(NSRange(location: caret + 1, length: 0))
+    }
+
+    private func occurrences(of needle: String, in haystack: String) -> Int {
+        var count = 0
+        var searchRange = haystack.startIndex..<haystack.endIndex
+        while let r = haystack.range(of: needle, options: [], range: searchRange) {
+            count += 1
+            searchRange = r.upperBound..<haystack.endIndex
+        }
+        return count
     }
 
     override func setSelectedRange(_ charRange: NSRange, affinity: NSSelectionAffinity, stillSelecting: Bool) {

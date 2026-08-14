@@ -17,6 +17,8 @@ final class MainWindowController: NSWindowController {
 
     private var splitVC: NSSplitViewController!
     private var previewItem: NSSplitViewItem!
+    private var outlineItem: NSSplitViewItem?
+    private var outlineVC: OutlineViewController?
 
     private var currentFileURL: URL?
     private var autoCompile = true
@@ -65,6 +67,16 @@ final class MainWindowController: NSWindowController {
         splitVC = NSSplitViewController()
         splitVC.splitView.autosaveName = "FlashTeX.Split"
 
+        let outline = OutlineViewController()
+        let outlineItem = NSSplitViewItem(sidebarWithViewController: outline)
+        outlineItem.minimumThickness = 160
+        outlineItem.maximumThickness = 320
+        outlineItem.canCollapse = true
+        outlineItem.isCollapsed = true
+        outlineItem.holdingPriority = .defaultHigh
+        self.outlineItem = outlineItem
+        self.outlineVC = outline
+
         let editorItem = NSSplitViewItem(viewController: makeEditorViewController())
         editorItem.minimumThickness = 300
         let previewItem = NSSplitViewItem(viewController: makePreviewViewController())
@@ -77,9 +89,10 @@ final class MainWindowController: NSWindowController {
         editorItem.holdingPriority = .defaultLow
         previewItem.holdingPriority = .defaultLow
 
+        splitVC.addSplitViewItem(outlineItem)
         splitVC.addSplitViewItem(editorItem)
         splitVC.addSplitViewItem(previewItem)
-        splitVC.splitView.setPosition(560, ofDividerAt: 0)
+        splitVC.splitView.setPosition(560, ofDividerAt: 1)
 
         // Root container = split view filling the window. Compile status is
         // surfaced through the toolbar progress item, not a bottom bar.
@@ -216,6 +229,9 @@ final class MainWindowController: NSWindowController {
             self.window?.isDocumentEdited = true
             self.highlighter.scheduleRehighlight(editor: self.editor,
                                                  scrollView: self.scrollView)
+            if !(self.outlineItem?.isCollapsed ?? true) {
+                self.refreshOutline()
+            }
             if self.autoCompile {
                 self.compiler.scheduleCompile(source: self.editor.string)
             }
@@ -560,6 +576,29 @@ final class MainWindowController: NSWindowController {
         previewItem.isCollapsed.toggle()
     }
 
+    // MARK: - Document outline
+
+    @objc func toggleOutline() {
+        guard let outlineItem else { return }
+        outlineItem.isCollapsed.toggle()
+        if !outlineItem.isCollapsed {
+            refreshOutline()
+            window?.makeFirstResponder(editor)
+        }
+    }
+
+    private func refreshOutline() {
+        let entries = DocumentOutline.parse(editor.string)
+        outlineVC?.update(entries: entries) { [weak self] entry in
+            self?.jumpToOutlineEntry(entry)
+        }
+    }
+
+    private func jumpToOutlineEntry(_ entry: OutlineEntry) {
+        editor.scrollToLine(entry.line)
+        window?.makeFirstResponder(editor)
+    }
+
     // MARK: - Editor font zoom
 
     /// Responder-chain fallbacks: these only fire when the editor itself isn't
@@ -809,6 +848,9 @@ extension MainWindowController: NSMenuItemValidation {
             return true
         case #selector(togglePreview):
             menuItem.state = previewItem?.isCollapsed == false ? .on : .off
+            return true
+        case #selector(toggleOutline):
+            menuItem.state = outlineItem?.isCollapsed == false ? .on : .off
             return true
         case #selector(toggleFlashMode):
             menuItem.state = flashController != nil ? .on : .off

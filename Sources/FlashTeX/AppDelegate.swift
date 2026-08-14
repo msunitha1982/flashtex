@@ -190,6 +190,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // ---- View menu ------------------------------------------------------
         main.addItem(menu(title: "View", items: [
             item("Toggle PDF Preview", "p", #selector(MainWindowController.togglePreview), [.command, .option]),
+            item("Document Outline", "s", #selector(MainWindowController.toggleOutline), [.command, .option]),
             .separator(),
             item("Zoom In Preview", "=", #selector(MainWindowController.zoomPreviewIn), .cmdShift),
             item("Zoom Out Preview", "-", #selector(MainWindowController.zoomPreviewOut), .cmdShift),
