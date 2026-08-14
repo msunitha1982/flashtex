@@ -175,7 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let engineItem = NSMenuItem(title: "Engine", action: nil, keyEquivalent: "")
         let engineMenu = NSMenu(title: "Engine")
-        for name in ["pdflatex", "xelatex", "lualatex"] {
+        for name in ["pdflatex", "xelatex", "lualatex", "tectonic"] {
             let mi = NSMenuItem(title: name,
                                 action: #selector(MainWindowController.chooseEngine(_:)),
                                 keyEquivalent: "")

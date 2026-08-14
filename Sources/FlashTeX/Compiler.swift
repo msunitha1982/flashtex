@@ -198,11 +198,61 @@ final class Compiler {
         }
 
         guard let engineURL = engineExecutableURL(engineName) else {
-            deliverFailure("Could not find `\(engineName)` on your PATH.\n"
-                           + "Install MacTeX from https://www.tug.org/mactex/ (or BasicTeX), then try again.\n"
-                           + "If it is installed but not on this path, add its bin directory (usually\n"
-                           + "/Library/TeX/texbin) to the PATH used to launch FlashTeX.", gen: gen)
+            let hint: String
+            if engineName == "tectonic" {
+                hint = "Install Tectonic with `brew install tectonic` or grab a binary\n"
+                     + "from https://tectonic-typesetting.github.io/, then try again."
+            } else {
+                hint = "Install MacTeX from https://www.tug.org/mactex/ (or BasicTeX), then try again.\n"
+                     + "If it is installed but not on this path, add its bin directory (usually\n"
+                     + "/Library/TeX/texbin) to the PATH used to launch FlashTeX."
+            }
+            deliverFailure("Could not find `\(engineName)` on your PATH.\n\(hint)", gen: gen)
             return nil
+        }
+
+        // Tectonic is a self-contained engine with its own rerun/bibliography
+        // logic, so it bypasses the classic multi-pass pipeline entirely.
+        if engineName == "tectonic" {
+            let pass = runTectonicPass(engineURL: engineURL, buildDir: buildDir)
+            let pdfURL = buildDir.appendingPathComponent("document.pdf")
+            let logURL = buildDir.appendingPathComponent("document.log")
+            let log = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
+            var errors = parseTectonicErrors(pass.output)
+            if errors.isEmpty { errors = parseLog(log) }
+            if !pass.ok && errors.isEmpty && !pass.output.isEmpty {
+                let tail = String(pass.output.suffix(300))
+                errors = [LatexIssue(line: -1, message: "Engine error: \(tail)",
+                                     context: "", hint: "")]
+            }
+            let pdfSize = (try? FileManager.default.attributesOfItem(atPath: pdfURL.path)[.size] as? Int) ?? 0
+            let success = pass.ok && pdfSize > 0
+            let elapsedMs = Int64(Date().timeIntervalSince(start) * 1000)
+            if success {
+                lock.lock()
+                if let old = lastBuildDir, old != buildDir {
+                    try? FileManager.default.removeItem(at: old)
+                }
+                lastBuildDir = buildDir
+                lock.unlock()
+                if firstRun {
+                    firstRun = false
+                    UserDefaults.standard.set(true, forKey: Compiler.compiledBeforeKey)
+                }
+            }
+            guard generation.load() == gen else { return nil }
+            let report = LatexReport(success: success,
+                                     pdfURL: success ? pdfURL : nil,
+                                     engineMessage: success ? "Rendered in \(elapsedMs) ms (tectonic)"
+                                                            : "Compilation failed (tectonic).",
+                                     errors: errors,
+                                     elapsedMs: elapsedMs,
+                                     engineName: "tectonic",
+                                     capacityError: false)
+            DispatchQueue.main.async { [weak self] in
+                self?.onFinished?(report)
+            }
+            return report
         }
 
         // Documents without \label/\ref/\tableofcontents/Asymptote render in a
@@ -339,6 +389,55 @@ final class Compiler {
         args.append("document.tex")
         process.arguments = args
 
+        let result = runAndCapture(process)
+        let pdfURL = buildDir.appendingPathComponent("document.pdf")
+        let pdfSize = (try? FileManager.default.attributesOfItem(atPath: pdfURL.path)[.size] as? Int) ?? 0
+        let output = result.stdout.isEmpty ? result.stderr : result.stdout
+        // Draft passes never write the PDF by design, so they can't be judged
+        // by its presence — only by the engine's exit code.
+        let ok = result.exitCode == 0 && (draftMode || pdfSize > 0) && !result.timedOut
+        return (ok, output)
+    }
+
+    /// One Tectonic invocation. Unlike the classic engines, `tectonic -X
+    /// compile` needs none of the TeX option flags: it runs as many TeX passes
+    /// as its output requires and drives BibTeX/biber itself. It also manages
+    /// its own memory, so the memory-override fallback doesn't apply. Errors
+    /// are reported as clean `error: file:line: message` lines on stderr.
+    private func runTectonicPass(engineURL: URL, buildDir: URL)
+        -> (ok: Bool, output: String) {
+        let process = Process()
+        process.executableURL = engineURL
+        process.currentDirectoryURL = buildDir
+        process.environment = TeX.environment()
+
+        // `--keep-logs` + `--keep-intermediates` leave document.log/.aux behind
+        // so error parsing and the incremental .aux state both work, exactly
+        // like the classic-engine pipeline. `--synctex` matches what the
+        // classic engines get so preview features stay consistent.
+        var args = ["-X", "compile", "--synctex",
+                    "--keep-logs", "--keep-intermediates"]
+        // Tectonic gates shell-escape behind an unstable-option flag; grant it
+        // only when the source actually uses it (same policy as the engines).
+        if needsShellEscape() { args += ["-Z", "shell-escape"] }
+        args.append("document.tex")
+        process.arguments = args
+
+        let result = runAndCapture(process)
+        let pdfURL = buildDir.appendingPathComponent("document.pdf")
+        let pdfSize = (try? FileManager.default.attributesOfItem(atPath: pdfURL.path)[.size] as? Int) ?? 0
+        let ok = result.exitCode == 0 && pdfSize > 0 && !result.timedOut
+        return (ok, result.stdout + result.stderr)
+    }
+
+    /// Spawn `process`, capture its stdout/stderr through pipes, run a
+    /// watchdog, and wait for it to finish. Shared by every engine pass so the
+    /// process lifecycle (PATH injection, pipes, watchdog, cancel) is handled
+    /// identically everywhere.
+    private func runAndCapture(_ process: Process) -> (exitCode: Int32,
+                                                       timedOut: Bool,
+                                                       stdout: String,
+                                                       stderr: String) {
         // Capture stdout/stderr through pipes so a failing engine leaves a
         // trail we can surface, and nothing blocks on the terminal.
         let outPipe = Pipe()
@@ -379,12 +478,13 @@ final class Compiler {
             lock.lock()
             if currentProcess === process { currentProcess = nil }
             lock.unlock()
-            return (false, "")
+            return (-1, false, "", "")
         }
 
         // Watchdog — never let a runaway engine wedge the app. The very first
-        // engine run rebuilds TeX's font/kpathsea caches and can legitimately
-        // take minutes, so it gets a much longer leash than steady-state runs.
+        // engine run rebuilds TeX's font/kpathsea caches (and Tectonic's first
+        // run downloads its support bundle) and can legitimately take minutes,
+        // so it gets a much longer leash than steady-state runs.
         let timeout: TimeInterval = firstRun ? 240 : 45
         let watchdog = DispatchWorkItem { [weak process] in
             guard let process else { return }
@@ -404,13 +504,9 @@ final class Compiler {
         if currentProcess === process { currentProcess = nil }
         lock.unlock()
 
-        let pdfURL = buildDir.appendingPathComponent("document.pdf")
-        let pdfSize = (try? FileManager.default.attributesOfItem(atPath: pdfURL.path)[.size] as? Int) ?? 0
-        let output = String(data: stdout.isEmpty ? stderr : stdout, encoding: .utf8) ?? ""
-        // Draft passes never write the PDF by design, so they can't be judged
-        // by its presence — only by the engine's exit code.
-        let ok = exitCode == 0 && (draftMode || pdfSize > 0) && !timedOut
-        return (ok, output)
+        let out = String(data: stdout, encoding: .utf8) ?? ""
+        let err = String(data: stderr, encoding: .utf8) ?? ""
+        return (exitCode, timedOut, out, err)
     }
 
     /// Compile every `*.asy` file in the build dir with the `asy` binary, if
@@ -574,6 +670,29 @@ final class Compiler {
     }
 
     // MARK: - Log parsing
+
+    /// Tectonic reports failures as clean `error: <file>:<line>: <message>`
+    /// lines on stderr (the TeX-log fallback is `parseLog`). This also strips
+    /// the leading `! ` that LaTeX errors embed, e.g.
+    /// `error: doc.tex:3: ! LaTeX Error: File `x.tex' not found.`
+    private func parseTectonicErrors(_ output: String) -> [LatexIssue] {
+        var issues: [LatexIssue] = []
+        let re = try! NSRegularExpression(
+            pattern: #"^error: ([^:]+):(\d+):\s*(.*)$"#,
+            options: [.anchorsMatchLines])
+        let ns = output as NSString
+        for m in re.matches(in: output, range: NSRange(location: 0, length: ns.length)) {
+            let file = ns.substring(with: m.range(at: 1))
+            guard let lineNo = Int(ns.substring(with: m.range(at: 2))) else { continue }
+            var message = ns.substring(with: m.range(at: 3))
+                .trimmingCharacters(in: .whitespaces)
+            if message.hasPrefix("! ") { message.removeFirst(2) }
+            issues.append(LatexIssue(line: lineNo, message: message,
+                                     context: file.trimmingCharacters(in: .whitespaces),
+                                     hint: ""))
+        }
+        return issues
+    }
 
     /// Lines that look like problems but are advisory (warnings, summaries).
     private func isNoiseLine(_ message: String) -> Bool {

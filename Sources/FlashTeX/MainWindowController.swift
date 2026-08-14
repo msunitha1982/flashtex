@@ -760,7 +760,7 @@ extension MainWindowController: NSToolbarDelegate {
             item.label = "Engine"
             let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 130, height: 26),
                                       pullsDown: false)
-            popup.addItems(withTitles: ["pdflatex", "xelatex", "lualatex"])
+            popup.addItems(withTitles: ["pdflatex", "xelatex", "lualatex", "tectonic"])
             popup.selectItem(withTitle: compiler.engine)
             popup.target = self
             popup.action = #selector(enginePopupChanged(_:))

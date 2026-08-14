@@ -70,6 +70,6 @@ enum TeX {
     /// True when at least one TeX engine is installed — i.e. the app can do
     /// useful work. Used by the first-run setup check.
     static func enginesAvailable() -> Bool {
-        ["pdflatex", "xelatex", "lualatex"].contains { findExecutable($0) != nil }
+        ["pdflatex", "xelatex", "lualatex", "tectonic"].contains { findExecutable($0) != nil }
     }
 }
