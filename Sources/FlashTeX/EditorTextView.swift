@@ -463,6 +463,9 @@ final class EditorTextView: VimTextView {
         super.setSelectedRange(charRange, affinity: affinity, stillSelecting: stillSelecting)
         needsDisplay = true
         onCursorMoved?()
+        // The active line number in the gutter follows the caret, so nudge the
+        // gutter view to repaint as the selection moves.
+        onGutterRefresh?()
         // While the caret sits on a line the error popup blocks, keep the popup
         // hidden; the moment the caret leaves, bring it back.
         updatePopupVisibilityForCaret()

@@ -124,8 +124,21 @@ enum Theme {
         return nsColor("base")
     }
 
-    static var editorText: NSColor { nsColor("text") }
-    static var editorTextHex: String { hex("text") }
+    static var editorText: NSColor {
+        let base = nsColor("text")
+        guard !settings.isDarkMode else { return base }
+        // Light mode: Catppuccin's "text" is a little soft against "base".
+        // Darken it toward near-black so normal text has real punch.
+        return base.blended(withFraction: 0.3, of: .black) ?? base
+    }
+    static var editorTextHex: String {
+        if settings.isDarkMode { return hex("text") }
+        guard let rgb = editorText.usingColorSpace(.sRGB) else { return hex("text") }
+        return String(format: "%02X%02X%02X",
+                      Int((rgb.redComponent * 255).rounded()),
+                      Int((rgb.greenComponent * 255).rounded()),
+                      Int((rgb.blueComponent * 255).rounded()))
+    }
     static var gutterText: NSColor { nsColor("overlay1") }
     /// Brighter line number for the line the caret is on.
     static var gutterTextActive: NSColor { nsColor("text") }

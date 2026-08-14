@@ -13,6 +13,7 @@ final class PreviewView: NSView {
 
     let pdfView = PDFView()
     private var pageObserver: NSObjectProtocol?
+    private var settingsObserver: NSObjectProtocol?
     private var keepPage = 0
     private var keepPointInPage = CGPoint.zero
 
@@ -46,6 +47,20 @@ final class PreviewView: NSView {
             forName: .PDFViewPageChanged, object: pdfView, queue: .main) { [weak self] _ in
             self?.rescaleToFit()
         }
+
+        // Re-apply the paper/surround background whenever the theme flips
+        // (light/dark) — the background is set once here and would otherwise
+        // stay stale (e.g. dark paper in light mode).
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: SettingsStore.changedNotification,
+            object: nil, queue: .main) { [weak self] _ in
+            self?.pdfView.backgroundColor = Theme.previewBackground
+        }
+    }
+
+    deinit {
+        if let pageObserver { NotificationCenter.default.removeObserver(pageObserver) }
+        if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

@@ -500,11 +500,12 @@ struct FlashModeSettingsView: View {
 /// the macOS keyboard-shortcut editor (System Settings ▸ Keyboard ▸ Shortcuts).
 struct MacrosSettingsView: View {
     @ObservedObject var settings: SettingsStore
-    @State private var selection = Set<UUID>()
     @State private var macros: [MacroEntry] = []
 
-    /// Live view of the persisted macros, keyed by a stable UUID so the List
-    /// selection survives edits to the definition text.
+    /// Live view of the persisted macros, keyed by a stable UUID so the row
+    /// identity survives edits to the definition text. Rows live in a plain
+    /// ScrollView (not a selectable List), so clicking a TextField focuses it
+    /// instead of being swallowed by the row's selection tap.
     private struct MacroEntry: Identifiable, Equatable {
         let id = UUID()
         var text: String
@@ -527,41 +528,35 @@ struct MacrosSettingsView: View {
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            List(selection: $selection) {
-                ForEach(Array(macros.enumerated()), id: \.element.id) { index, entry in
-                    HStack(spacing: 8) {
-                        Image(systemName: "arrow.turn.down.right")
-                            .foregroundColor(.secondary)
-                            .font(.caption)
-                        TextField("\\newcommand{\\cmd}{definition}", text: binding(for: index))
-                            .font(.system(.body, design: .monospaced))
-                            .textFieldStyle(.roundedBorder)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(macros.enumerated()), id: \.element.id) { index, entry in
+                        HStack(spacing: 8) {
+                            Image(systemName: "arrow.turn.down.right")
+                                .foregroundColor(.secondary)
+                                .font(.caption)
+                            TextField("\\newcommand{\\cmd}{definition}", text: binding(for: index))
+                                .font(.system(.body, design: .monospaced))
+                                .textFieldStyle(.roundedBorder)
+                            Button {
+                                removeMacro(at: index)
+                            } label: {
+                                Image(systemName: "minus.circle")
+                                    .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Remove this macro")
+                        }
                     }
-                    .tag(entry.id)
                 }
-                .onMove(perform: moveMacro)
+                .padding(.vertical, 4)
             }
             .frame(minHeight: 180)
 
-            HStack(spacing: 12) {
-                Button {
-                    addMacro()
-                } label: {
-                    Label("Add", systemImage: "plus")
-                }
-
-                Button {
-                    removeSelected()
-                } label: {
-                    Label("Remove", systemImage: "minus")
-                }
-                .disabled(selection.isEmpty)
-
-                Spacer()
-
-                Text("Drag to reorder")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+            Button {
+                addMacro()
+            } label: {
+                Label("Add Macro", systemImage: "plus")
             }
         }
         .padding()
@@ -582,17 +577,11 @@ struct MacrosSettingsView: View {
         let entry = MacroEntry(text: "\\newcommand{\\newmacro}{}")
         macros.append(entry)
         syncToStore()
-        selection = [entry.id]
     }
 
-    private func removeSelected() {
-        macros.removeAll { selection.contains($0.id) }
-        selection.removeAll()
-        syncToStore()
-    }
-
-    private func moveMacro(from source: IndexSet, to destination: Int) {
-        macros.move(fromOffsets: source, toOffset: destination)
+    private func removeMacro(at index: Int) {
+        guard index < macros.count else { return }
+        macros.remove(at: index)
         syncToStore()
     }
 

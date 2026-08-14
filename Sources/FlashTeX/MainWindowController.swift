@@ -41,7 +41,6 @@ final class MainWindowController: NSWindowController {
             backing: .buffered, defer: false)
         window.title = "FlashTeX"
         window.minSize = NSSize(width: 900, height: 560)
-        window.setFrameAutosaveName("FlashTeX.Window")
         super.init(window: window)
 
         window.delegate = self
@@ -52,6 +51,10 @@ final class MainWindowController: NSWindowController {
         loadWelcomeDocument()
         window.initialFirstResponder = editor
         window.makeFirstResponder(editor)
+
+        // Default to a full-screen-sized window on launch.
+        window.setFrame(window.screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900),
+                       display: true)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -67,6 +70,12 @@ final class MainWindowController: NSWindowController {
         let previewItem = NSSplitViewItem(viewController: makePreviewViewController())
         previewItem.minimumThickness = 240
         self.previewItem = previewItem
+
+        // Equal holding priorities make both panes scale with the window, so
+        // maximizing (or full-screening) keeps the editor/preview ratio instead
+        // of blowing the preview up to fill everything.
+        editorItem.holdingPriority = .defaultLow
+        previewItem.holdingPriority = .defaultLow
 
         splitVC.addSplitViewItem(editorItem)
         splitVC.addSplitViewItem(previewItem)
