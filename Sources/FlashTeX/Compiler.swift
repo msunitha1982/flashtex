@@ -157,7 +157,11 @@ final class Compiler {
         // — whose pools are dynamically allocated — as the last resort.
         var outcome = runPipeline(source: source, engineName: engine, gen: gen,
                                   memoryOverride: false)
-        if let r = outcome, !r.success, r.capacityError, r.engineName != "lualatex" {
+        // Tectonic's TeX memory pools are hardcoded (open upstream issue), so
+        // the memory-override retry is pointless for it; the LuaTeX fallback
+        // below still applies.
+        if let r = outcome, !r.success, r.capacityError,
+           r.engineName != "lualatex", r.engineName != "tectonic" {
             outcome = runPipeline(source: source, engineName: engine, gen: gen,
                                   memoryOverride: true)
         }
@@ -214,7 +218,26 @@ final class Compiler {
         // Tectonic is a self-contained engine with its own rerun/bibliography
         // logic, so it bypasses the classic multi-pass pipeline entirely.
         if engineName == "tectonic" {
-            let pass = runTectonicPass(engineURL: engineURL, buildDir: buildDir)
+            // Asymptote needs an external `asy` pass, which Tectonic can't run
+            // itself. Worse, Tectonic only syncs its auxiliary .pre/.asy files
+            // to disk after a fully *successful* run — but a first run always
+            // fails because the figure PDFs don't exist yet. The fix: plant
+            // placeholder figure PDFs so the first run succeeds and emits the
+            // real .asy sources, run `asy` over them (replacing the
+            // placeholders), then run Tectonic once more to embed the figures.
+            let asyCount = sourceAsymptoteCount(source)
+            var searchPathArgs: [String] = []
+            if asyCount > 0, let dir = asymptotePackageDirectory() {
+                searchPathArgs = ["-Z", "search-path=\(dir)"]
+                writeAsymptotePlaceholders(buildDir: buildDir, count: asyCount)
+            }
+            var pass = runTectonicPass(engineURL: engineURL, buildDir: buildDir,
+                                       extraArgs: searchPathArgs)
+            if pass.ok && asyCount > 0 {
+                runAsymptoteIfNeeded(buildDir: buildDir)
+                pass = runTectonicPass(engineURL: engineURL, buildDir: buildDir,
+                                       extraArgs: searchPathArgs)
+            }
             let pdfURL = buildDir.appendingPathComponent("document.pdf")
             let logURL = buildDir.appendingPathComponent("document.log")
             let log = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
@@ -228,6 +251,7 @@ final class Compiler {
             let pdfSize = (try? FileManager.default.attributesOfItem(atPath: pdfURL.path)[.size] as? Int) ?? 0
             let success = pass.ok && pdfSize > 0
             let elapsedMs = Int64(Date().timeIntervalSince(start) * 1000)
+            let capacity = logContainsCapacityError(log)
             if success {
                 lock.lock()
                 if let old = lastBuildDir, old != buildDir {
@@ -248,7 +272,7 @@ final class Compiler {
                                      errors: errors,
                                      elapsedMs: elapsedMs,
                                      engineName: "tectonic",
-                                     capacityError: false)
+                                     capacityError: capacity)
             DispatchQueue.main.async { [weak self] in
                 self?.onFinished?(report)
             }
@@ -404,7 +428,10 @@ final class Compiler {
     /// as its output requires and drives BibTeX/biber itself. It also manages
     /// its own memory, so the memory-override fallback doesn't apply. Errors
     /// are reported as clean `error: file:line: message` lines on stderr.
-    private func runTectonicPass(engineURL: URL, buildDir: URL)
+    /// `extraArgs` (e.g. `-Z search-path=…` for asymptote) are appended before
+    /// the input file.
+    private func runTectonicPass(engineURL: URL, buildDir: URL,
+                                 extraArgs: [String] = [])
         -> (ok: Bool, output: String) {
         let process = Process()
         process.executableURL = engineURL
@@ -420,6 +447,7 @@ final class Compiler {
         // Tectonic gates shell-escape behind an unstable-option flag; grant it
         // only when the source actually uses it (same policy as the engines).
         if needsShellEscape() { args += ["-Z", "shell-escape"] }
+        args += extraArgs
         args.append("document.tex")
         process.arguments = args
 
@@ -617,6 +645,58 @@ final class Compiler {
         guard let current = currentSource else { return false }
         let markers = ["\\write18", "\\begin{asy}", "runsystem", "\\immediate\\write18"]
         return markers.contains { current.contains($0) }
+    }
+
+    /// Number of `\begin{asy}` environments in the source. Each one becomes a
+    /// `document-N.asy` figure that needs an external `asy` pass. Only the
+    /// `asy` environment produces numbered figures — `asydef` (preamble) and
+    /// `asyinclude` (existing files) do not, so they are excluded.
+    private func sourceAsymptoteCount(_ source: String) -> Int {
+        let re = try! NSRegularExpression(pattern: #"\\begin\{asy\}(\[[^\]]*\])?"#)
+        let ns = source as NSString
+        return re.matches(in: source, range: NSRange(location: 0, length: ns.length)).count
+    }
+
+    /// A valid, minimal PDF used as a stand-in figure while Asymptote sources
+    /// are being collected. Tectonic's PDF parser rejects hand-tweaked
+    /// placeholder bytes, but this one (produced by `asy`) is accepted.
+    private static let asymptotePlaceholderPDF =
+        Data(base64Encoded: "JVBERi0xLjUKJcfsj6IKJSVJbnZvY2F0aW9uOiBncyAtcSAtZE5PUEFVU0UgLWRCQVRDSCAtUCAtZFNBRkVSIC1kQUxMT1dQU1RSQU5TUEFSRU5DWSAtc0RFVklDRT1wZGZ3cml0ZSAtZEVQU0Nyb3AgLWRTdWJzZXRGb250cz10cnVlIC1kRW1iZWRBbGxGb250cz10cnVlIC1kTWF4U3Vic2V0UGN0PTEwMCAtZEVuY29kZUNvbG9ySW1hZ2VzPXRydWUgLWRFbmNvZGVHcmF5SW1hZ2VzPXRydWUgLWRDb21wYXRpYmlsaXR5TGV2ZWw9MS41CiUlKyAtZFRyYW5zZmVyRnVuY3Rpb25JbmZvPS9BcHBseSAtZEF1dG9Sb3RhdGVQYWdlcz0vTm9uZSAtZzYxMng3OTIgLWRERVZJQ0VXSURUSFBPSU5UUz0zIC1kREVWSUNFSEVJR0hUUE9JTlRTPTMgLXNPdXRwdXRGaWxlPT8gPyA/IC1mID8KNSAwIG9iago8PC9MZW5ndGggNiAwIFIvRmlsdGVyIC9GbGF0ZURlY29kZT4+CnN0cmVhbQp4nCtUMNAzVDAAQSidnMulH2SukF7MZapQzmWo4AXEWVwGCu5cRnqmCiCcy2WuZ2JmYGkC5uVwBXMFcgEABhUN92VuZHN0cmVhbQplbmRvYmoKNCAwIG9iago8PC9UeXBlL1BhZ2UvTWVkaWFCb3ggWzAgMCAzIDNdCi9QYXJlbnQgMyAwIFIKL1Jlc291cmNlczw8L1Byb2NTZXRbL1BERl0KL0V4dEdTdGF0ZSA5IDAgUgo+PgovQ29udGVudHMgNSAwIFIKPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFsKNCAwIFIKXSAvQ291bnQgMQo+PgplbmRvYmoKMSAwIG9iago8PC9UeXBlIC9DYXRhbG9nIC9QYWdlcyAzIDAgUgovTWV0YWRhdGEgMTAgMCBSCj4+CmVuZG9iagoxMCAwIG9iago8PC9UeXBlL01ldGFkYXRhCi9TdWJ0eXBlL1hNTC9MZW5ndGggMTQ1MT4+c3RyZWFtCjw/eHBhY2tldCBiZWdpbj0n77u/JyBpZD0nVzVNME1wQ2VoaUh6cmVTek5UY3prYzlkJz8+Cjw/YWRvYmUteGFwLWZpbHRlcnMgZXNjPSJDUkxGIj8+Cjx4OnhtcG1ldGEgeG1sbnM6eD0nYWRvYmU6bnM6bWV0YS8nIHg6eG1wdGs9J1hNUCB0b29sa2l0IDIuOS4xLTEzLCBmcmFtZXdvcmsgMS42Jz4KPHJkZjpSREYgeG1sbnM6cmRmPSdodHRwOi8vd3d3LnczLm9yZy8xOTk5LzAyLzIyLXJkZi1zeW50YXgtbnMjJyB4bWxuczppWD0naHR0cDovL25zLmFkb2JlLmNvbS9pWC8xLjAvJz4KPHJkZjpEZXNjcmlwdGlvbiByZGY6YWJvdXQ9IiIgeG1sbnM6cGRmPSdodHRwOi8vbnMuYWRvYmUuY29tL3BkZi8xLjMvJyBwZGY6UHJvZHVjZXI9J0dQTCBHaG9zdHNjcmlwdCAxMC4wNy4xJy8+CjxyZGY6RGVzY3JpcHRpb24gcmRmOmFib3V0PSIiIHhtbG5zOnhtcD0naHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wLyc+PHhtcDpNb2RpZnlEYXRlPjIwMjYtMDgtMTRUMTM6NTg6MjYtMDc6MDA8L3htcDpNb2RpZnlEYXRlPgo8eG1wOkNyZWF0ZURhdGU+MjAyNi0wOC0xNFQxMzo1ODoyNi0wNzowMDwveG1wOkNyZWF0ZURhdGU+Cjx4bXA6TWV0YWRhdGFEYXRlPjIwMjYtMDgtMTRUMTM6NTg6MjYtMDc6MDA8L3htcDpNZXRhZGF0YURhdGU+Cjx4bXA6Q3JlYXRvclRvb2w+QXN5bXB0b3RlIDMuMDk8L3htcDpDcmVhdG9yVG9vbD48L3JkZjpEZXNjcmlwdGlvbj4KPHJkZjpEZXNjcmlwdGlvbiByZGY6YWJvdXQ9IiIgeG1sbnM6eG1wTU09J2h0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC9tbS8nIHhtcE1NOkRvY3VtZW50SUQ9J3V1aWQ6NzFhZmE3OTMtZDAzZi0xMWZjLTAwMDAtZjk2MmVjNTM2NjY3Jy8+CjxyZGY6RGVzY3JpcHRpb24gcmRmOmFib3V0PSIiIHhtbG5zOnhtcE1NPSdodHRwOi8vbnMuYWRvYmUuY29tL3hhcC8xLjAvbW0vJyB4bXBNTTpSZW5kaXRpb25DbGFzcz0nZGVmYXVsdCcvPgo8cmRmOkRlc2NyaXB0aW9uIHJkZjphYm91dD0iIiB4bWxuczp4bXBNTT0naHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wL21tLycgeG1wTU06VmVyc2lvbklEPScxJy8+CjxyZGY6RGVzY3JpcHRpb24gcmRmOmFib3V0PSIiIHhtbG5zOmRjPSdodHRwOi8vcHVybC5vcmcvZGMvZWxlbWVudHMvMS4xLycgZGM6Zm9ybWF0PSdhcHBsaWNhdGlvbi9wZGYnPjxkYzp0aXRsZT48cmRmOkFsdD48cmRmOmxpIHhtbDpsYW5nPSd4LWRlZmF1bHQnPidVbnRpdGxlZCc8L3JkZjpsaT48L3JkZjpBbHQ+PC9kYzp0aXRsZT48L3JkZjpEZXNjcmlwdGlvbj4KPC9yZGY6UkRGPgo8L3g6eG1wbWV0YT4KICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAo8P3hwYWNrZXQgZW5kPSd3Jz8+CmVuZHN0cmVhbQplbmRvYmoKOCAwIG9iago8PC9GaWx0ZXIvRmxhdGVEZWNvZGUKL1R5cGUvT2JqU3RtCi9OIDQKL0ZpcnN0IDE5L0xlbmd0aCAxNjI+PnN0cmVhbQp4nIWM0QqCMBhG732K/069yP2bumnIQDK8KRDtBUQXCdVkW5Bv3+oFuvz4zjkCEDiwEkpIGTDIOFQVuWyrIse3awc3OhWQoYbreLdKSp4H/u9FILzYS/ldndHza1ImarsTtDdtnZ3MsjqgmKBIaByQg1GjW/Sz8bmo2TNkHAua0TQvGN+hCBFDj531/If4hbSJars9VqedgjTBMpbyA8iLNS8KZW5kc3RyZWFtCmVuZG9iagoxMSAwIG9iago8PAovVHlwZSAvWFJlZgovU2l6ZSAxMgovUm9vdCAxIDAgUiAvSW5mbyAyIDAgUgovSUQgWzw0NjAwNkY5QTYzMzg4NUY2RTMzQTBFMUM3RkZGRUYzQT48NDYwMDZGOUE2MzM4ODVGNkUzM0EwRTFDN0ZGRkVGM0E+XQovSW5kZXggWzAgMTIgXQovVyBbMSAyIDJdCi9GaWx0ZXIgL0ZsYXRlRGVjb2RlL0xlbmd0aCA1MQo+PgpzdHJlYW0KeJwlyLkNACAQxEDvXsDRNRF90RYEPCKxNAb2lgeYJOQOcrlR+08vKOenFb6sCw7daAYUCmVuZHN0cmVhbQplbmRvYmoKc3RhcnR4cmVmCjI1NTUKJSVFT0YK")!
+
+    /// Write `count` placeholder figure PDFs (`document-1.pdf` …) into the
+    /// build dir so the first Tectonic run succeeds and actually writes the
+    /// real `.asy` sources to disk (Tectonic discards aux files on failure).
+    private func writeAsymptotePlaceholders(buildDir: URL, count: Int) {
+        let fm = FileManager.default
+        for i in 1...count {
+            let url = buildDir.appendingPathComponent("document-\(i).pdf")
+            try? Self.asymptotePlaceholderPDF.write(to: url)
+        }
+    }
+
+    /// Locate the directory that holds `asymptote.sty` in a local TeX
+    /// installation (it is absent from Tectonic's bundle). Returns nil when no
+    /// TeX tree with Asymptote is available.
+    private func asymptotePackageDirectory() -> String? {
+        guard let kpse = TeX.findExecutable("kpsewhich") else { return nil }
+        let process = Process()
+        process.executableURL = kpse
+        process.environment = TeX.environment()
+        process.arguments = ["asymptote.sty"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return nil
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let path = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !path.isEmpty else { return nil }
+        return (path as NSString).deletingLastPathComponent
     }
 
     /// Memory/capacity failure signatures in the engine log — the trigger for
