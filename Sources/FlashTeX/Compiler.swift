@@ -83,7 +83,7 @@ final class Compiler {
         currentSource = source
         let delay = max(0.01, SettingsStore.shared.renderDebounceMs / 1000.0)
         let t = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
-            self?.compile(source: source)
+            self?.compile(source: source, gateOnBalance: true)
         }
         debounce = t
         RunLoop.main.add(t, forMode: .common)
@@ -93,7 +93,7 @@ final class Compiler {
     func compileNow(source: String) {
         debounce?.invalidate()
         currentSource = source
-        compile(source: source)
+        compile(source: source, gateOnBalance: false)
     }
 
     func shutdown() {
@@ -124,7 +124,13 @@ final class Compiler {
 
     // MARK: - Compile orchestration
 
-    private func compile(source: String) {
+    private func compile(source: String, gateOnBalance: Bool) {
+        // Debounced auto-compiles wait until the document is structurally
+        // balanced (every \begin has its \end) so mid-keystroke builds don't
+        // churn out "Missing \end" failures. Manual compiles always run.
+        if gateOnBalance, !LatexStructure.isBalanced(source) {
+            return
+        }
         let gen = generation.increment()
         lock.lock()
         let running = currentProcess

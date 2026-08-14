@@ -558,8 +558,42 @@ struct MacrosSettingsView: View {
             } label: {
                 Label("Add Macro", systemImage: "plus")
             }
+
+            Divider()
+                .padding(.vertical, 4)
+
+            Text("QUICK FORMAT SHORTCUTS")
+                .font(.caption)
+                .fontWeight(.bold)
+                .foregroundColor(.secondary)
+
+            Text("Typing the ⌘ modifier with the key below wraps the selection (or inserts the construct at the caret). Set a key to a single character to rebind it.")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ForEach(SettingsStore.FormatAction.allCases) { action in
+                FormRow(action.displayName) {
+                    TextField("", text: shortcutBinding(for: action))
+                        .font(.system(.body, design: .monospaced))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 60)
+                }
+            }
         }
         .padding()
+    }
+
+    private func shortcutBinding(for action: SettingsStore.FormatAction) -> Binding<String> {
+        Binding(
+            get: { settings.formatKey(for: action) },
+            set: { newValue in
+                // Keep a single character, lowercase for the modifier match.
+                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let first = trimmed.first else { return }
+                settings.setFormatKey(String(first).lowercased(), for: action)
+            }
+        )
     }
 
     private func binding(for index: Int) -> Binding<String> {

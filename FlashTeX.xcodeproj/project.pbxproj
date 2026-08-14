@@ -30,6 +30,7 @@
 		BB0000000000000000000015 /* Fuse.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000017 /* Fuse.swift */; };
 		BB0000000000000000000016 /* FuseUtilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000018 /* FuseUtilities.swift */; };
 		BB0000000000000000000017 /* String+Fuse.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000019 /* String+Fuse.swift */; };
+		BB0000000000000000000018 /* LatexStructure.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001A /* LatexStructure.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -58,6 +59,7 @@
 		AA0000000000000000000017 /* Fuse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Fuse/Fuse.swift; sourceTree = "<group>"; };
 		AA0000000000000000000018 /* FuseUtilities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Fuse/FuseUtilities.swift; sourceTree = "<group>"; };
 		AA0000000000000000000019 /* String+Fuse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Fuse/String+Fuse.swift"; sourceTree = "<group>"; };
+		AA000000000000000000001A /* LatexStructure.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LatexStructure.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -106,6 +108,7 @@
 				AA0000000000000000000017 /* Fuse.swift */,
 				AA0000000000000000000018 /* FuseUtilities.swift */,
 				AA0000000000000000000019 /* String+Fuse.swift */,
+				AA000000000000000000001A /* LatexStructure.swift */,
 			);
 			path = Sources/FlashTeX;
 			sourceTree = "<group>";
@@ -212,6 +215,7 @@
 				BB0000000000000000000015 /* Fuse.swift in Sources */,
 				BB0000000000000000000016 /* FuseUtilities.swift in Sources */,
 				BB0000000000000000000017 /* String+Fuse.swift in Sources */,
+				BB0000000000000000000018 /* LatexStructure.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

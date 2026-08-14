@@ -39,6 +39,7 @@ final class SettingsStore: ObservableObject {
         case unfoldTrigger      // "click" | "hover" | "caret"
 
         case vimMode
+        case formatShortcuts    // [FormatAction: keyEquivalent string]
     }
 
     // MARK: - Enums
@@ -92,6 +93,39 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Quick formatting shortcuts (⌘B → \textbf, ⌘I → \textit, ⌘K → $...$).
+    /// The key equivalent is user-configurable from the Macros settings tab.
+    enum FormatAction: String, CaseIterable, Identifiable {
+        case bold, italic, math
+        var id: String { rawValue }
+
+        var displayName: String {
+            switch self {
+            case .bold: return "Bold (\\textbf{})"
+            case .italic: return "Italic (\\textit{})"
+            case .math: return "Inline math ($…$)"
+            }
+        }
+
+        /// The default key equivalent (without the ⌘ modifier).
+        var defaultKey: String {
+            switch self {
+            case .bold: return "b"
+            case .italic: return "i"
+            case .math: return "k"
+            }
+        }
+
+        /// The text wrapped around the selection (or inserted at the caret).
+        var wrapper: (open: String, close: String) {
+            switch self {
+            case .bold: return ("\\textbf{", "}")
+            case .italic: return ("\\textit{", "}")
+            case .math: return ("$", "$")
+            }
+        }
+    }
+
     // MARK: - Defaults
 
     private let defaults: UserDefaults
@@ -122,6 +156,9 @@ final class SettingsStore: ObservableObject {
             Key.renderDebounceMs.rawValue: 400.0,
             Key.unfoldTrigger.rawValue: UnfoldTrigger.click.rawValue,
             Key.vimMode.rawValue: false,
+            Key.formatShortcuts.rawValue: FormatAction.allCases.reduce(into: [String: String]()) { dict, action in
+                dict[action.rawValue] = action.defaultKey
+            },
         ]
         defaults.register(defaults: initial)
     }
@@ -273,6 +310,31 @@ final class SettingsStore: ObservableObject {
     var vimMode: Bool {
         get { defaults.bool(forKey: Key.vimMode.rawValue) }
         set { set(newValue, .vimMode) }
+    }
+
+    // MARK: - Quick formatting shortcuts
+
+    /// The configured key equivalent (a single character, ⌘ modifier implied)
+    /// for each quick-format action. Falls back to the built-in default.
+    func formatKey(for action: FormatAction) -> String {
+        let dict = defaults.dictionary(forKey: Key.formatShortcuts.rawValue) as? [String: String] ?? [:]
+        return dict[action.rawValue] ?? action.defaultKey
+    }
+
+    func setFormatKey(_ key: String, for action: FormatAction) {
+        var dict = defaults.dictionary(forKey: Key.formatShortcuts.rawValue) as? [String: String] ?? [:]
+        dict[action.rawValue] = key
+        set(dict, .formatShortcuts)
+    }
+
+    /// The format action bound to a given key equivalent (⌘ modifier implied),
+    /// if any. Handles both the typed key and its uppercase form.
+    func formatAction(forKey key: String) -> FormatAction? {
+        let lower = key.lowercased()
+        for action in FormatAction.allCases where formatKey(for: action).lowercased() == lower {
+            return action
+        }
+        return nil
     }
 }
 

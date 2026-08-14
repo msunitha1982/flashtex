@@ -145,6 +145,9 @@ enum Theme {
     static var mathFoldBackground: NSColor { nsColor("surface0") }
     static var previewBackground: NSColor { nsColor("mantle") }
     static var accent: NSColor { nsColor("blue") }
+    /// Red used for error markers (gutter dots, underlines). Slightly brighter
+    /// than the palette's `red` in dark mode so it reads as an error at a glance.
+    static var errorRed: NSColor { nsColor("red") }
     static var secondaryText: NSColor { nsColor("overlay2") }
     static var separator: NSColor { nsColor("surface1") }
 

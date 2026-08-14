@@ -399,11 +399,42 @@ final class EditorTextView: VimTextView {
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if flags == [.command, .shift] && event.charactersIgnoringModifiers?.lowercased() == "p" {
+        let key = event.charactersIgnoringModifiers ?? ""
+        if flags == [.command], let action = SettingsStore.shared.formatAction(forKey: key) {
+            applyFormatting(action)
+            return true
+        }
+        if flags == [.command, .shift] && key.lowercased() == "p" {
             CommandPaletteWindowController.show(onEditor: self)
             return true
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    /// ⌘B / ⌘I / ⌘K (or the user's rebinding): wrap the selection in the
+    /// action's LaTeX construct. With no selection the construct is inserted
+    /// and the caret placed between the delimiters.
+    private func applyFormatting(_ action: SettingsStore.FormatAction) {
+        let wrapper = action.wrapper
+        let ns = string as NSString
+        let sel = selectedRange()
+        let range = NSRange(location: min(sel.location, ns.length),
+                            length: min(sel.length, ns.length - min(sel.location, ns.length)))
+        let replacement: String
+        if range.length > 0 {
+            let inner = ns.substring(with: range)
+            replacement = wrapper.open + inner + wrapper.close
+        } else {
+            replacement = wrapper.open + wrapper.close
+        }
+        undoManager?.setActionName(action.displayName)
+        if shouldChangeText(in: range, replacementString: replacement) {
+            textStorage?.replaceCharacters(in: range, with: replacement)
+            didChangeText()
+        }
+        // Place the caret just inside the delimiters.
+        let caret = range.location + (wrapper.open as NSString).length
+        setSelectedRange(NSRange(location: caret, length: 0))
     }
 
     // =====================================================================

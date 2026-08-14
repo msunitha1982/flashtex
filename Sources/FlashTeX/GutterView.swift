@@ -78,16 +78,27 @@ final class GutterView: NSView {
             let charLoc = lm.characterIndexForGlyph(at: glyphRange.location)
             let isLineStart = charLoc == 0 || ns.character(at: charLoc - 1) == 10
             guard isLineStart else { return }      // wrapped continuation lines share a number
+            let line = editor.lineNumber(at: charLoc)
             let text = editor.lineNumberText(at: charLoc)
             guard !text.isEmpty else { return }
-            let isCaretLine = editor.lineNumber(at: charLoc) == caretLine
+            let isCaretLine = line == caretLine
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: Theme.gutterFont,
                 .foregroundColor: isCaretLine ? Theme.gutterTextActive : Theme.gutterText,
             ]
             let size = (text as NSString).size(withAttributes: attrs)
             let x = width - size.width - 8
-            
+
+            // A red dot marks lines the compiler flagged with an error, so the
+            // failure is visible even when the error popover is dismissed.
+            if editor.diagnostics[line] != nil {
+                let dotRadius: CGFloat = 3
+                let dotY = rect.minY + (rect.height - dotRadius * 2) / 2
+                Theme.errorRed.setFill()
+                NSBezierPath(ovalIn: NSRect(x: 4, y: dotY,
+                                            width: dotRadius * 2, height: dotRadius * 2)).fill()
+            }
+
             // Align gutter font baseline exactly with editor font baseline inside fragment
             let lineCenterOffset = max(0, (fragRect.height - fontLineHeight) / 2)
             let y = rect.minY + baselineDiff + lineCenterOffset

@@ -210,8 +210,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let flashItem = NSMenuItem()
         main.addItem(flashItem)
         let flashMenu = NSMenu(title: "Flash")
-        let flashMode = item("Flash Mode…", "k",
-                             #selector(MainWindowController.toggleFlashMode), .command)
+        let flashMode = item("Flash Mode…", "K",
+                             #selector(MainWindowController.toggleFlashMode), .cmdShift)
         flashMenu.addItem(flashMode)
         flashItem.submenu = flashMenu
 
