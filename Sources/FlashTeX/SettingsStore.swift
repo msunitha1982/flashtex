@@ -29,6 +29,7 @@ final class SettingsStore: ObservableObject {
         case ligatures
         case maxColumnChars     // 0 = full width, else centered column
         case gutterMode         // "none" | "absolute" | "relative"
+        case permanentMacros    // [String] \newcommand-style definitions injected into new documents
 
         case mathScale          // 0.85…1.25
         case chipFill           // "solid" | "transparent"
@@ -113,6 +114,7 @@ final class SettingsStore: ObservableObject {
             Key.ligatures.rawValue: false,
             Key.maxColumnChars.rawValue: 0,
             Key.gutterMode.rawValue: GutterMode.absolute.rawValue,
+            Key.permanentMacros.rawValue: [],
             Key.mathScale.rawValue: 1.0,
             Key.chipFill.rawValue: ChipFill.solid.rawValue,
             Key.chipPadding.rawValue: 4.0,
@@ -222,6 +224,14 @@ final class SettingsStore: ObservableObject {
     var gutterMode: GutterMode {
         get { GutterMode(rawValue: string(.gutterMode)) ?? .absolute }
         set { set(newValue.rawValue, .gutterMode) }
+    }
+
+    /// "Permanent macros" — \newcommand-style definitions that are injected
+    /// into the preamble of every new document (see `Theme.welcomeDocument`),
+    /// so they apply across all LaTeX files without being typed per-file.
+    var permanentMacros: [String] {
+        get { defaults.stringArray(forKey: Key.permanentMacros.rawValue) ?? [] }
+        set { set(newValue, .permanentMacros) }
     }
 
     // MARK: - Flash Mode & preview rendering

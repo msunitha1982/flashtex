@@ -104,7 +104,7 @@ enum Theme {
         return NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
-    static let gutterFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+    static let gutterFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
 
     /// Exact line height for an editor font, scaled by the user's multiplier
     /// (1.2…1.6×). `minimumLineHeight` is set to this so wrapping and gutter
@@ -126,28 +126,27 @@ enum Theme {
 
     static var editorText: NSColor { nsColor("text") }
     static var editorTextHex: String { hex("text") }
-    static var gutterBackground: NSColor { nsColor("mantle") }
     static var gutterText: NSColor { nsColor("overlay1") }
+    /// Brighter line number for the line the caret is on.
+    static var gutterTextActive: NSColor { nsColor("text") }
     static var mathFoldBackground: NSColor { nsColor("surface0") }
     static var previewBackground: NSColor { nsColor("mantle") }
     static var accent: NSColor { nsColor("blue") }
     static var secondaryText: NSColor { nsColor("overlay2") }
     static var separator: NSColor { nsColor("surface1") }
 
-    /// Mode-aware current-line highlight. The two modes get visibly different
-    /// tints (a soft gray on light Catppuccin, a deep gray on dark), drawn at
-    /// partial opacity so the line is only hinted at, never painted solid.
-    static var currentLine: NSColor {
-        let hex = settings.lineIndicatorHex.isEmpty ? defaultCurrentLineHex
-                                                    : settings.lineIndicatorHex
-        let base = nsColor(from: hex) ?? nsColor("blue")
-        let alpha: CGFloat = settings.isDarkMode ? 0.5 : 0.45
-        return base.withAlphaComponent(alpha)
+    /// Base tint used by the current-line indicator. When the user hasn't
+    /// picked a custom colour the indicator follows the palette accent, so the
+    /// highlight feels native and adapts to the current flavour.
+    static var currentLineBase: NSColor {
+        let hex = settings.lineIndicatorHex.isEmpty ? nil : settings.lineIndicatorHex
+        return hex.flatMap { nsColor(from: $0) } ?? accent
     }
 
-    /// Per-mode default line-indicator tint when the user hasn't overridden it.
-    static var defaultCurrentLineHex: String {
-        settings.isDarkMode ? "2A2F41" : "C4C8D3"
+    /// Faint, modern full-line highlight behind the caret line — a whisper of
+    /// the accent tint, never a solid band.
+    static var currentLine: NSColor {
+        currentLineBase.withAlphaComponent(0.12)
     }
 
     static var flashBlockBackground: NSColor {
@@ -188,7 +187,32 @@ enum Theme {
     //  Welcome document shown on first launch
     // =====================================================================
 
-    static let welcomeDocument = """
+    /// The new-document template. Permanent macros from Settings are injected
+    /// into the preamble (after the last `\usepackage`) so they apply to every
+    /// document the user creates, without being typed per-file.
+    static var welcomeDocument: String {
+        let macros = SettingsStore.shared.permanentMacros
+        guard !macros.isEmpty else { return baseWelcomeDocument }
+
+        var lines = baseWelcomeDocument.components(separatedBy: "\n")
+        // Find where the preamble's package includes end (in the template they
+        // sit right before the blank line preceding \title).
+        var insertAt: Int?
+        for (i, line) in lines.enumerated().reversed() {
+            if line.hasPrefix("\\documentclass") || line.hasPrefix("\\usepackage") {
+                insertAt = i + 1
+                break
+            }
+        }
+        guard let insertAt else { return baseWelcomeDocument }
+        // `insertAt` is the template's blank line after the packages. Keep that
+        // blank, then the macros, then one blank before \title.
+        lines.insert(contentsOf: macros, at: insertAt + 1)
+        lines.insert("", at: insertAt + 1 + macros.count)
+        return lines.joined(separator: "\n")
+    }
+
+    private static let baseWelcomeDocument = """
     % FlashTeX — live LaTeX at native speed
     %
     % Type on the left. When you pause, a background process runs

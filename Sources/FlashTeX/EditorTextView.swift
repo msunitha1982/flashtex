@@ -156,8 +156,17 @@ final class EditorTextView: VimTextView {
         let lineRect = lm.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
             .offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
         guard lineRect.intersects(dirtyRect) else { return }
+
+        // A clean, modern indicator: a faint accent-tinted highlight with
+        // softly rounded caps, running edge-to-edge (including behind the
+        // line numbers) and centred on the line's true centre line — a slight
+        // spill into the neighbour below is fine.
+        let corner: CGFloat = min(4, lineRect.height * 0.5)
+        let bandRect = NSRect(x: 0, y: lineRect.midY - lineRect.height / 2,
+                              width: bounds.width,
+                              height: lineRect.height)
         Theme.currentLine.setFill()
-        NSRect(x: 0, y: lineRect.minY, width: bounds.width, height: lineRect.height).fill()
+        NSBezierPath(roundedRect: bandRect, xRadius: corner, yRadius: corner).fill()
     }
 
     /// Told when the gutter needs a repaint (text edits that change the line

@@ -86,6 +86,11 @@ struct SettingsView: View {
                     Label("Flash Mode", systemImage: "bolt.fill")
                 }
 
+            MacrosSettingsView(settings: settings)
+                .tabItem {
+                    Label("Macros", systemImage: "textformat.abc")
+                }
+
             VimSettingsView(settings: settings)
                 .tabItem {
                     Label("Vim Mode", systemImage: "keyboard")
@@ -488,7 +493,115 @@ struct FlashModeSettingsView: View {
     }
 }
 
-// MARK: - Tab 4: Vim Settings View
+// MARK: - Tab 4: Macros Settings View
+
+/// "Permanent macros" — \newcommand-style definitions injected into the
+/// preamble of every new document. Edited with an add/remove list that mirrors
+/// the macOS keyboard-shortcut editor (System Settings ▸ Keyboard ▸ Shortcuts).
+struct MacrosSettingsView: View {
+    @ObservedObject var settings: SettingsStore
+    @State private var selection = Set<UUID>()
+    @State private var macros: [MacroEntry] = []
+
+    /// Live view of the persisted macros, keyed by a stable UUID so the List
+    /// selection survives edits to the definition text.
+    private struct MacroEntry: Identifiable, Equatable {
+        let id = UUID()
+        var text: String
+    }
+
+    init(settings: SettingsStore) {
+        self.settings = settings
+        _macros = State(initialValue: settings.permanentMacros.map { MacroEntry(text: $0) })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("PERMANENT MACROS")
+                .font(.caption)
+                .fontWeight(.bold)
+                .foregroundColor(.secondary)
+
+            Text("Definitions here are injected into the preamble of every new LaTeX document (File ▸ New). The format matches document-level macros, e.g. \\newcommand{\\R}{\\mathbb{R}}.")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            List(selection: $selection) {
+                ForEach(Array(macros.enumerated()), id: \.element.id) { index, entry in
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.turn.down.right")
+                            .foregroundColor(.secondary)
+                            .font(.caption)
+                        TextField("\\newcommand{\\cmd}{definition}", text: binding(for: index))
+                            .font(.system(.body, design: .monospaced))
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    .tag(entry.id)
+                }
+                .onMove(perform: moveMacro)
+            }
+            .frame(minHeight: 180)
+
+            HStack(spacing: 12) {
+                Button {
+                    addMacro()
+                } label: {
+                    Label("Add", systemImage: "plus")
+                }
+
+                Button {
+                    removeSelected()
+                } label: {
+                    Label("Remove", systemImage: "minus")
+                }
+                .disabled(selection.isEmpty)
+
+                Spacer()
+
+                Text("Drag to reorder")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding()
+    }
+
+    private func binding(for index: Int) -> Binding<String> {
+        Binding(
+            get: { index < macros.count ? macros[index].text : "" },
+            set: { newValue in
+                guard index < macros.count else { return }
+                macros[index].text = newValue
+                syncToStore()
+            }
+        )
+    }
+
+    private func addMacro() {
+        let entry = MacroEntry(text: "\\newcommand{\\newmacro}{}")
+        macros.append(entry)
+        syncToStore()
+        selection = [entry.id]
+    }
+
+    private func removeSelected() {
+        macros.removeAll { selection.contains($0.id) }
+        selection.removeAll()
+        syncToStore()
+    }
+
+    private func moveMacro(from source: IndexSet, to destination: Int) {
+        macros.move(fromOffsets: source, toOffset: destination)
+        syncToStore()
+    }
+
+    private func syncToStore() {
+        settings.permanentMacros = macros.map { $0.text }
+    }
+}
+
+// MARK: - Tab 5: Vim Settings View
 
 struct VimSettingsView: View {
     @ObservedObject var settings: SettingsStore

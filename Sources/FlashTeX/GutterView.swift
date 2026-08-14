@@ -57,9 +57,6 @@ final class GutterView: NSView {
         let mode = SettingsStore.shared.gutterMode
         guard mode != .none else { return }
 
-        Theme.gutterBackground.setFill()
-        bounds.fill()
-
         guard let lm = editor.layoutManager, let tc = editor.textContainer else { return }
         let ns = editor.string as NSString
         let origin = editor.textContainerOrigin
@@ -70,8 +67,7 @@ final class GutterView: NSView {
         let visible = lm.glyphRange(forBoundingRect: containerRect, in: tc)
         guard visible.location != NSNotFound else { return }
 
-        let attrs: [NSAttributedString.Key: Any] = [.font: Theme.gutterFont,
-                                                    .foregroundColor: Theme.gutterText]
+        let caretLine = editor.lineNumber(at: editor.selectedRange().location)
         let width = editor.gutterWidth()
         let editorFont = editor.font ?? Theme.editorFont
         let baselineDiff = editorFont.ascender - Theme.gutterFont.ascender
@@ -84,6 +80,11 @@ final class GutterView: NSView {
             guard isLineStart else { return }      // wrapped continuation lines share a number
             let text = editor.lineNumberText(at: charLoc)
             guard !text.isEmpty else { return }
+            let isCaretLine = editor.lineNumber(at: charLoc) == caretLine
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: Theme.gutterFont,
+                .foregroundColor: isCaretLine ? Theme.gutterTextActive : Theme.gutterText,
+            ]
             let size = (text as NSString).size(withAttributes: attrs)
             let x = width - size.width - 8
             
