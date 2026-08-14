@@ -66,6 +66,11 @@ final class Compiler {
     /// the kpathsea/font caches and can take minutes, so first runs get a much
     /// more generous watchdog than steady-state compiles.
     private var firstRun = !UserDefaults.standard.bool(forKey: compiledBeforeKey)
+    /// Engines whose first run has already completed (successfully or not).
+    /// Tracked per engine because a LuaTeX fallback may happen long after the
+    /// requested engine's first run, and its cold run needs the same generous
+    /// watchdog — otherwise the fallback gets killed mid-cache-build.
+    private var engineFirstRuns: Set<String> = []
 
     init() {
         sweepStaleBuildDirs()
@@ -225,6 +230,7 @@ final class Compiler {
             // placeholder figure PDFs so the first run succeeds and emits the
             // real .asy sources, run `asy` over them (replacing the
             // placeholders), then run Tectonic once more to embed the figures.
+            let firstRunForEngine = engineFirstRuns.insert(engineName).inserted
             let asyCount = sourceAsymptoteCount(source)
             var searchPathArgs: [String] = []
             if asyCount > 0, let dir = asymptotePackageDirectory() {
@@ -232,11 +238,13 @@ final class Compiler {
                 writeAsymptotePlaceholders(buildDir: buildDir, count: asyCount)
             }
             var pass = runTectonicPass(engineURL: engineURL, buildDir: buildDir,
-                                       extraArgs: searchPathArgs)
+                                       extraArgs: searchPathArgs,
+                                       firstRun: firstRunForEngine)
             if pass.ok && asyCount > 0 {
                 runAsymptoteIfNeeded(buildDir: buildDir)
                 pass = runTectonicPass(engineURL: engineURL, buildDir: buildDir,
-                                       extraArgs: searchPathArgs)
+                                       extraArgs: searchPathArgs,
+                                       firstRun: firstRunForEngine)
             }
             let pdfURL = buildDir.appendingPathComponent("document.pdf")
             let logURL = buildDir.appendingPathComponent("document.log")
@@ -283,6 +291,7 @@ final class Compiler {
         // single pass — the common case, and the fastest one. Everything else
         // goes through the settled multi-pass pipeline below.
         let needsMultiplePasses = sourceNeedsMultiplePasses(source)
+        let firstRunForEngine = engineFirstRuns.insert(engineName).inserted
 
         var ok: Bool
         var engineOutput = ""
@@ -291,7 +300,8 @@ final class Compiler {
             // TeX itself invoke `asy` for \begin{asy} blocks, writing the
             // figure PDFs into this build dir.
             let pass1 = runSinglePass(engineURL: engineURL, buildDir: buildDir,
-                                      draftMode: true, memoryOverride: memoryOverride)
+                                      draftMode: true, memoryOverride: memoryOverride,
+                                      firstRun: firstRunForEngine)
             ok = pass1.ok
             engineOutput = pass1.output
             // Explicit fallback: run `asy` ourselves so restricted shell-escape
@@ -302,19 +312,22 @@ final class Compiler {
             // moved (or an asy figure first appeared in this pass).
             if ok {
                 let pass2 = runSinglePass(engineURL: engineURL, buildDir: buildDir,
-                                          draftMode: false, memoryOverride: memoryOverride)
+                                          draftMode: false, memoryOverride: memoryOverride,
+                                          firstRun: firstRunForEngine)
                 ok = pass2.ok
                 engineOutput = pass2.output
             }
             if ok && referenceHash(buildDir) != refsAfter1 {
                 let pass3 = runSinglePass(engineURL: engineURL, buildDir: buildDir,
-                                          draftMode: false, memoryOverride: memoryOverride)
+                                          draftMode: false, memoryOverride: memoryOverride,
+                                          firstRun: firstRunForEngine)
                 ok = pass3.ok
                 engineOutput = pass3.output
             }
         } else {
             let pass1 = runSinglePass(engineURL: engineURL, buildDir: buildDir,
-                                      draftMode: false, memoryOverride: memoryOverride)
+                                      draftMode: false, memoryOverride: memoryOverride,
+                                      firstRun: firstRunForEngine)
             ok = pass1.ok
             engineOutput = pass1.output
             // Documents with \begin{asy} pulled in via \input — or whose .asy
@@ -322,7 +335,8 @@ final class Compiler {
             // pass so PDFKit gets the rendered figures immediately.
             if ok && asyWasInvolved(buildDir: buildDir) {
                 let pass2 = runSinglePass(engineURL: engineURL, buildDir: buildDir,
-                                          draftMode: false, memoryOverride: memoryOverride)
+                                          draftMode: false, memoryOverride: memoryOverride,
+                                          firstRun: firstRunForEngine)
                 ok = pass2.ok
                 engineOutput = pass2.output
             }
@@ -385,7 +399,8 @@ final class Compiler {
     /// the captured stdout/stderr (for diagnosing wedged or dying runs).
     private func runSinglePass(engineURL: URL, buildDir: URL,
                                draftMode: Bool = false,
-                               memoryOverride: Bool = false) -> (ok: Bool, output: String) {
+                               memoryOverride: Bool = false,
+                               firstRun: Bool = false) -> (ok: Bool, output: String) {
         let process = Process()
         process.executableURL = engineURL
         process.currentDirectoryURL = buildDir
@@ -413,7 +428,7 @@ final class Compiler {
         args.append("document.tex")
         process.arguments = args
 
-        let result = runAndCapture(process)
+        let result = runAndCapture(process, firstRun: firstRun)
         let pdfURL = buildDir.appendingPathComponent("document.pdf")
         let pdfSize = (try? FileManager.default.attributesOfItem(atPath: pdfURL.path)[.size] as? Int) ?? 0
         let output = result.stdout.isEmpty ? result.stderr : result.stdout
@@ -431,7 +446,8 @@ final class Compiler {
     /// `extraArgs` (e.g. `-Z search-path=…` for asymptote) are appended before
     /// the input file.
     private func runTectonicPass(engineURL: URL, buildDir: URL,
-                                 extraArgs: [String] = [])
+                                 extraArgs: [String] = [],
+                                 firstRun: Bool = false)
         -> (ok: Bool, output: String) {
         let process = Process()
         process.executableURL = engineURL
@@ -451,7 +467,7 @@ final class Compiler {
         args.append("document.tex")
         process.arguments = args
 
-        let result = runAndCapture(process)
+        let result = runAndCapture(process, firstRun: firstRun)
         let pdfURL = buildDir.appendingPathComponent("document.pdf")
         let pdfSize = (try? FileManager.default.attributesOfItem(atPath: pdfURL.path)[.size] as? Int) ?? 0
         let ok = result.exitCode == 0 && pdfSize > 0 && !result.timedOut
@@ -462,7 +478,7 @@ final class Compiler {
     /// watchdog, and wait for it to finish. Shared by every engine pass so the
     /// process lifecycle (PATH injection, pipes, watchdog, cancel) is handled
     /// identically everywhere.
-    private func runAndCapture(_ process: Process) -> (exitCode: Int32,
+    private func runAndCapture(_ process: Process, firstRun: Bool = false) -> (exitCode: Int32,
                                                        timedOut: Bool,
                                                        stdout: String,
                                                        stderr: String) {
@@ -513,7 +529,7 @@ final class Compiler {
         // engine run rebuilds TeX's font/kpathsea caches (and Tectonic's first
         // run downloads its support bundle) and can legitimately take minutes,
         // so it gets a much longer leash than steady-state runs.
-        let timeout: TimeInterval = firstRun ? 240 : 45
+        let timeout: TimeInterval = (firstRun || self.firstRun) ? 240 : 45
         let watchdog = DispatchWorkItem { [weak process] in
             guard let process else { return }
             if process.isRunning {
