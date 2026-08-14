@@ -101,6 +101,19 @@ final class Compiler {
         compile(source: source, gateOnBalance: false)
     }
 
+    /// Cancel any in-flight engine run without starting a new one. The bumped
+    /// generation counter makes the pipeline's `guard generation == gen`
+    /// checks fail, so no stale report reaches the UI.
+    func stopCompiling() {
+        debounce?.invalidate()
+        lock.lock()
+        let proc = currentProcess
+        currentProcess = nil
+        lock.unlock()
+        generation.increment()
+        if let proc, proc.isRunning { proc.terminate() }
+    }
+
     func shutdown() {
         debounce?.invalidate()
         lock.lock()

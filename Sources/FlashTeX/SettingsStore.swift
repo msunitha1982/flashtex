@@ -40,6 +40,7 @@ final class SettingsStore: ObservableObject {
 
         case vimMode
         case formatShortcuts    // [FormatAction: keyEquivalent string]
+        case suppressFallbackNotice  // Bool — don't re-warn about engine fallbacks
     }
 
     // MARK: - Enums
@@ -310,6 +311,14 @@ final class SettingsStore: ObservableObject {
     var vimMode: Bool {
         get { defaults.bool(forKey: Key.vimMode.rawValue) }
         set { set(newValue, .vimMode) }
+    }
+
+    /// When a requested engine fails and compilation silently falls back to
+    /// another engine, the user is warned once — unless they ticked the
+    /// "don't show again" box.
+    var suppressFallbackNotice: Bool {
+        get { defaults.bool(forKey: Key.suppressFallbackNotice.rawValue) }
+        set { set(newValue, .suppressFallbackNotice) }
     }
 
     // MARK: - Quick formatting shortcuts

@@ -258,6 +258,9 @@ final class MainWindowController: NSWindowController {
 
     private func handleCompileFinished(_ report: LatexReport) {
         endCompilingIndicator()
+        if report.engineName != compiler.engine {
+            notifyFallback(requested: compiler.engine, used: report.engineName)
+        }
         if report.success, let pdfURL = report.pdfURL {
             lastPdfURL = pdfURL
             currentErrors = []
@@ -279,6 +282,31 @@ final class MainWindowController: NSWindowController {
                                         context: "", hint: "")]
             insertErrorToolbarItem()
             return
+        }
+    }
+
+    /// Surface a silent engine fallback (e.g. tectonic → lualatex) once, unless
+    /// the user checked "don't show again".
+    private func notifyFallback(requested: String, used: String) {
+        guard !SettingsStore.shared.suppressFallbackNotice else { return }
+        let alert = NSAlert()
+        alert.messageText = "Fell back to \(used)"
+        alert.informativeText = "Compiling with \(requested) hit a limit (usually TeX "
+            + "memory), so FlashTeX used \(used) instead. The result may differ slightly."
+        let checkbox = NSButton(checkboxWithTitle: "Don't show again", target: nil, action: nil)
+        alert.accessoryView = checkbox
+        alert.addButton(withTitle: "OK")
+        if let window {
+            alert.beginSheetModal(for: window) { [weak self] _ in
+                if checkbox.state == .on {
+                    SettingsStore.shared.suppressFallbackNotice = true
+                }
+                self?.window?.makeFirstResponder(self?.editor)
+            }
+        } else {
+            if alert.runModal() == .alertFirstButtonReturn, checkbox.state == .on {
+                SettingsStore.shared.suppressFallbackNotice = true
+            }
         }
     }
 
@@ -545,6 +573,12 @@ final class MainWindowController: NSWindowController {
         compiler.compileNow(source: editor.string)
     }
 
+    @objc func stopCompilation(_ sender: Any?) {
+        guard isCompiling else { return }
+        compiler.stopCompiling()
+        endCompilingIndicator()
+    }
+
     @objc func toggleAutoCompile() {
         autoCompile.toggle()
         autoSwitch?.state = autoCompile ? .on : .off
@@ -554,15 +588,14 @@ final class MainWindowController: NSWindowController {
     }
 
     @objc func chooseEngine(_ sender: NSMenuItem) {
-        guard let name = sender.representedObject as? String else { return }
+        guard !isCompiling, let name = sender.representedObject as? String else { return }
         compiler.engine = name
         enginePopup?.selectItem(withTitle: name)
     }
 
     @objc func enginePopupChanged(_ sender: NSPopUpButton) {
-        if let name = sender.titleOfSelectedItem {
-            compiler.engine = name
-        }
+        guard !isCompiling, let name = sender.titleOfSelectedItem else { return }
+        compiler.engine = name
     }
 
     @objc func autoSwitchChanged(_ sender: NSSwitch) {
@@ -641,10 +674,12 @@ final class MainWindowController: NSWindowController {
     /// compiles never flash it — it only appears "when necessary".
     private func beginCompilingIndicator() {
         isCompiling = true
+        enginePopup?.isEnabled = false
         compilingDelay?.invalidate()
         let t = Timer(timeInterval: 0.25, repeats: false) { [weak self] _ in
             guard let self = self, self.isCompiling else { return }
             self.insertProgressItem()
+            self.insertStopItem()
         }
         compilingDelay = t
         // `.common` so the spinner still appears while the run loop is busy
@@ -654,9 +689,11 @@ final class MainWindowController: NSWindowController {
 
     private func endCompilingIndicator() {
         isCompiling = false
+        enginePopup?.isEnabled = true
         compilingDelay?.invalidate()
         compilingDelay = nil
         removeProgressItem()
+        removeStopItem()
     }
 
     // MARK: - Shutdown
@@ -691,6 +728,19 @@ extension MainWindowController {
         }
     }
 
+    private func insertStopItem() {
+        guard let toolbar = window?.toolbar else { return }
+        guard !toolbar.items.contains(where: { $0.itemIdentifier == ToolbarID.stop }) else { return }
+        toolbar.insertItem(withItemIdentifier: ToolbarID.stop, at: 2)
+    }
+
+    private func removeStopItem() {
+        guard let toolbar = window?.toolbar else { return }
+        if let idx = toolbar.items.firstIndex(where: { $0.itemIdentifier == ToolbarID.stop }) {
+            toolbar.removeItem(at: idx)
+        }
+    }
+
     private func insertErrorToolbarItem() {
         guard let toolbar = window?.toolbar, !currentErrors.isEmpty else { return }
         guard !toolbar.items.contains(where: { $0.itemIdentifier == ToolbarID.errors }) else { return }
@@ -712,6 +762,7 @@ extension MainWindowController: NSToolbarDelegate {
     private enum ToolbarID {
         static let compile = NSToolbarItem.Identifier("FlashTeX.Compile")
         static let progress = NSToolbarItem.Identifier("FlashTeX.Compiling")
+        static let stop = NSToolbarItem.Identifier("FlashTeX.Stop")
         static let engine = NSToolbarItem.Identifier("FlashTeX.Engine")
         static let auto = NSToolbarItem.Identifier("FlashTeX.AutoCompile")
         static let flash = NSToolbarItem.Identifier("FlashTeX.Flash")
@@ -753,6 +804,15 @@ extension MainWindowController: NSToolbarDelegate {
             spinner.controlSize = .small
             spinner.startAnimation(nil)
             item.view = spinner
+            return item
+
+        case ToolbarID.stop:
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Stop"
+            item.image = NSImage(systemSymbolName: "stop.fill",
+                                 accessibilityDescription: "Stop compilation")
+            item.target = self
+            item.action = #selector(stopCompilation(_:))
             return item
 
         case ToolbarID.engine:
@@ -845,7 +905,9 @@ extension MainWindowController: NSMenuItemValidation {
             return true
         case #selector(chooseEngine(_:)):
             menuItem.state = (menuItem.representedObject as? String == compiler.engine) ? .on : .off
-            return true
+            return !isCompiling
+        case #selector(stopCompilation(_:)):
+            return isCompiling
         case #selector(togglePreview):
             menuItem.state = previewItem?.isCollapsed == false ? .on : .off
             return true

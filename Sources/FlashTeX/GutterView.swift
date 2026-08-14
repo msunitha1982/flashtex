@@ -23,6 +23,13 @@ final class GutterView: NSView {
         self.editor = editor
         self.scrollView = scrollView
         super.init(frame: .zero)
+        // Layer-backed: without a backing layer the gutter is a plain sibling
+        // of the (layer-backed) text view, so the text view's layer can draw
+        // over it on redraw — line numbers flicker or vanish. Its own layer
+        // keeps the strip composited on top and cached, so scrolling and caret
+        // moves just move the layer instead of re-rasterising it.
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
         // Sibling of the text view inside the clip view, so it moves with the
         // document when the user scrolls. Added last so it draws on top.
         scrollView.contentView.addSubview(self)
@@ -48,7 +55,9 @@ final class GutterView: NSView {
         let clip = scrollView.contentView
         let width = editor.gutterWidth()
         let docHeight = max(editor.frame.height, clip.bounds.height)
-        frame = NSRect(x: 0, y: 0, width: width, height: docHeight)
+        if frame.width != width || frame.height != docHeight {
+            frame = NSRect(x: 0, y: 0, width: width, height: docHeight)
+        }
         needsDisplay = true
     }
 

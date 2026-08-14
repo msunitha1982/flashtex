@@ -169,6 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         main.addItem(compileItem)
         let compileMenu = NSMenu(title: "Compile")
         compileMenu.addItem(item("Compile Now", "r", #selector(MainWindowController.compileNow), .command))
+        compileMenu.addItem(item("Stop Compiling", ".", #selector(MainWindowController.stopCompilation(_:)), .command))
         compileMenu.addItem(item("Pause Live Compile", "", #selector(MainWindowController.toggleAutoCompile)))
         compileMenu.addItem(item("Show Errors…", "", #selector(MainWindowController.showErrorSheet)))
         compileMenu.addItem(.separator())
