@@ -141,7 +141,7 @@ final class LaTeXSyntaxHighlighter {
 
     // MARK: - Tokenizer
 
-    private let theme = SyntaxTheme.current
+    private var theme: SyntaxTheme { SyntaxTheme.current }
 
     private func tokenize(_ text: String) -> [Token] {
         let ns = text as NSString
@@ -381,17 +381,20 @@ struct SyntaxTheme {
     let embedded: NSColor
     let delimiter: NSColor
 
-    static let text: NSColor = Theme.editorText
-    static let background: NSColor = Theme.editorBackground
+    static var text: NSColor { Theme.editorText }
+    static var background: NSColor { Theme.editorBackground }
 
-    static let current = SyntaxTheme(
-        command:       Theme.syntaxCommand,
-        environment:   Theme.syntaxEnvironment,
-        math:          Theme.syntaxMath,
-        mandatoryArg:  Theme.syntaxMandatoryArg,
-        optionalParam: Theme.syntaxOptionalParam,
-        reference:     Theme.syntaxReference,
-        comment:       Theme.syntaxComment,
-        embedded:      Theme.syntaxEmbedded,
-        delimiter:     Theme.syntaxDelimiter)
+    /// Resolved at call time so syntax overrides apply immediately.
+    static var current: SyntaxTheme {
+        SyntaxTheme(
+            command:       Theme.syntaxCommand,
+            environment:   Theme.syntaxEnvironment,
+            math:          Theme.syntaxMath,
+            mandatoryArg:  Theme.syntaxMandatoryArg,
+            optionalParam: Theme.syntaxOptionalParam,
+            reference:     Theme.syntaxReference,
+            comment:       Theme.syntaxComment,
+            embedded:      Theme.syntaxEmbedded,
+            delimiter:     Theme.syntaxDelimiter)
+    }
 }
