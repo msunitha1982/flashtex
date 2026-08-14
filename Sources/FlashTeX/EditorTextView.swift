@@ -468,6 +468,15 @@ final class EditorTextView: VimTextView {
             super.insertText("    ", replacementRange: replacementRange)
             return
         }
+        if s == "\\" {                       // start a LaTeX command → autocomplete
+            super.insertText(insertString, replacementRange: replacementRange)
+            maybeCloseEnvironment()
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.window != nil else { return }
+                self.complete(nil)
+            }
+            return
+        }
         guard s.count == 1 else {
             super.insertText(insertString, replacementRange: replacementRange)
             return
@@ -492,6 +501,62 @@ final class EditorTextView: VimTextView {
         }
         super.insertText(insertString, replacementRange: replacementRange)
         maybeCloseEnvironment()
+    }
+
+    // =====================================================================
+    //  LaTeX autocomplete
+    // =====================================================================
+
+    /// The word to complete on. For LaTeX the partial word must include the
+    /// leading backslash (`\fra` → complete to `\frac`), so we extend the
+    /// default word range backwards across the backslash.
+    override var rangeForUserCompletion: NSRange {
+        let ns = string as NSString
+        let base = super.rangeForUserCompletion
+        guard base.location != NSNotFound, base.location > 0 else { return base }
+        // If the character before the default word is a backslash, include it.
+        let before = ns.character(at: base.location - 1)
+        if before == 92 {   // "\"
+            return NSRange(location: base.location - 1, length: base.length + 1)
+        }
+        return base
+    }
+
+    override func completions(forPartialWordRange charRange: NSRange,
+                              indexOfSelectedItem index: UnsafeMutablePointer<Int>?) -> [String]? {
+        let ns = string as NSString
+        guard charRange.location != NSNotFound, charRange.length > 0 else { return nil }
+        let partial = ns.substring(with: charRange)
+        // Only autocomplete when the partial word starts with a backslash —
+        // plain words never get LaTeX command suggestions.
+        guard partial.hasPrefix("\\") else { return nil }
+        let matches = LaTeXCompletion.matches(partial: partial)
+        return matches.isEmpty ? nil : matches
+    }
+
+    override func insertCompletion(_ word: String, forPartialWordRange charRange: NSRange,
+                                   movement: Int, isFinal flag: Bool) {
+        // While the user is still navigating the list, let NSTextView render the
+        // live preview normally.
+        guard flag, let template = LaTeXCompletion.snippets[word] else {
+            super.insertCompletion(word, forPartialWordRange: charRange,
+                                   movement: movement, isFinal: flag)
+            return
+        }
+        let (text, placeholders) = LaTeXCompletion.assemble(template)
+        undoManager?.setActionName("Complete \(word)")
+        if shouldChangeText(in: charRange, replacementString: text) {
+            textStorage?.replaceCharacters(in: charRange, with: text)
+            didChangeText()
+        }
+        // Select the first placeholder so the user can type straight over it.
+        if let first = placeholders.first {
+            setSelectedRange(NSRange(location: charRange.location + first.location,
+                                     length: first.length))
+        } else {
+            setSelectedRange(NSRange(location: charRange.location + (text as NSString).length,
+                                     length: 0))
+        }
     }
 
     // =====================================================================
