@@ -517,71 +517,73 @@ struct MacrosSettingsView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("PERMANENT MACROS")
-                .font(.caption)
-                .fontWeight(.bold)
-                .foregroundColor(.secondary)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("PERMANENT MACROS")
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .foregroundColor(.secondary)
 
-            Text("Definitions here are injected into the preamble of every new LaTeX document (File ▸ New). The format matches document-level macros, e.g. \\newcommand{\\R}{\\mathbb{R}}.")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                Text("Definitions here are injected into the preamble of every new LaTeX document (File ▸ New). The format matches document-level macros, e.g. \\newcommand{\\R}{\\mathbb{R}}.")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array(macros.enumerated()), id: \.element.id) { index, entry in
-                        HStack(spacing: 8) {
-                            Image(systemName: "arrow.turn.down.right")
-                                .foregroundColor(.secondary)
-                                .font(.caption)
-                            TextField("\\newcommand{\\cmd}{definition}", text: binding(for: index))
-                                .font(.system(.body, design: .monospaced))
-                                .textFieldStyle(.roundedBorder)
-                            Button {
-                                removeMacro(at: index)
-                            } label: {
-                                Image(systemName: "minus.circle")
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(macros.enumerated()), id: \.element.id) { index, entry in
+                            HStack(spacing: 8) {
+                                Image(systemName: "arrow.turn.down.right")
                                     .foregroundColor(.secondary)
+                                    .font(.caption)
+                                TextField("\\newcommand{\\cmd}{definition}", text: binding(for: index))
+                                    .font(.system(.body, design: .monospaced))
+                                    .textFieldStyle(.roundedBorder)
+                                Button {
+                                    removeMacro(at: index)
+                                } label: {
+                                    Image(systemName: "minus.circle")
+                                        .foregroundColor(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .help("Remove this macro")
                             }
-                            .buttonStyle(.plain)
-                            .help("Remove this macro")
                         }
                     }
+                    .padding(.vertical, 4)
                 }
-                .padding(.vertical, 4)
-            }
-            .frame(minHeight: 180)
+                .frame(minHeight: 180)
 
-            Button {
-                addMacro()
-            } label: {
-                Label("Add Macro", systemImage: "plus")
-            }
+                Button {
+                    addMacro()
+                } label: {
+                    Label("Add Macro", systemImage: "plus")
+                }
 
-            Divider()
-                .padding(.vertical, 4)
+                Divider()
+                    .padding(.vertical, 4)
 
-            Text("QUICK FORMAT SHORTCUTS")
-                .font(.caption)
-                .fontWeight(.bold)
-                .foregroundColor(.secondary)
+                Text("QUICK FORMAT SHORTCUTS")
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .foregroundColor(.secondary)
 
-            Text("Typing the ⌘ modifier with the key below wraps the selection (or inserts the construct at the caret). Set a key to a single character to rebind it.")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                Text("Typing the ⌘ modifier with the key below wraps the selection (or inserts the construct at the caret). Set a key to a single character to rebind it.")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            ForEach(SettingsStore.FormatAction.allCases) { action in
-                FormRow(action.displayName) {
-                    TextField("", text: shortcutBinding(for: action))
-                        .font(.system(.body, design: .monospaced))
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 60)
+                ForEach(SettingsStore.FormatAction.allCases) { action in
+                    FormRow(action.displayName) {
+                        TextField("", text: shortcutBinding(for: action))
+                            .font(.system(.body, design: .monospaced))
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 60)
+                    }
                 }
             }
+            .padding()
         }
-        .padding()
     }
 
     private func shortcutBinding(for action: SettingsStore.FormatAction) -> Binding<String> {

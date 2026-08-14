@@ -528,11 +528,11 @@ final class EditorTextView: VimTextView {
         }
     }
 
-    /// Whether the given line is physically blocked/occluded by the popup pane,
-    /// or is the target error line itself.
+    /// Whether the given line is physically blocked/occluded by the popup pane.
+    /// The error line itself is never "blocked" — the popup is anchored to it
+    /// (arrow touching its edge), so the caret can sit there with the popup
+    /// fully visible; only lines the pane actually covers hide it.
     private func isLineBlockedByPopover(_ line: Int) -> Bool {
-        guard let popoverLine = InlineLookUpPopover.currentLine else { return false }
-        if line == popoverLine { return true }
         guard let pane = InlineLookUpPopover.activePane, let lm = layoutManager else { return false }
         let lineR = lineRange(forLine: line)
         guard lineR.length > 0 else { return false }
@@ -543,7 +543,11 @@ final class EditorTextView: VimTextView {
         let lineRect = NSRect(x: 0, y: textContainerOrigin.y + frag.minY, width: bounds.width, height: frag.height)
 
         let paneFrame = pane.frame
-        return lineRect.maxY > paneFrame.minY && lineRect.minY < paneFrame.maxY
+        // A line is only "blocked" when the pane actually covers most of it.
+        // Half-height overlaps (the popup's edge landing mid-line) would
+        // otherwise hide the popup on a third line the pane barely touches.
+        let overlap = min(lineRect.maxY, paneFrame.maxY) - max(lineRect.minY, paneFrame.minY)
+        return overlap > lineRect.height * 0.5
     }
 }
 

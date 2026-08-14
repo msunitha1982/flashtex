@@ -84,11 +84,11 @@ public struct InlineLookUpPanel: View {
     }
 
     public var body: some View {
-        HStack(alignment: .center, spacing: 10) {
+        HStack(alignment: .center, spacing: 8) {
             if let onDismiss = onDismiss {
                 Button(action: onDismiss) {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 12, weight: .regular))
+                        .font(.system(size: 11, weight: .regular))
                         .foregroundColor(Color(NSColor.tertiaryLabelColor))
                 }
                 .buttonStyle(.plain)
@@ -96,22 +96,15 @@ public struct InlineLookUpPanel: View {
                 .accessibilityLabel("Dismiss popup")
             }
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(Color(NSColor.labelColor))
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Text(text)
-                    .font(.system(size: 12))
-                    .foregroundColor(Color(NSColor.secondaryLabelColor))
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            Text(title.isEmpty ? text : "\(title): \(text)")
+                .font(.system(size: 11))
+                .foregroundColor(Color(NSColor.labelColor))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.horizontal, 12)
-        .padding(.top, pointsUp ? 7 + 9 : 9)
-        .padding(.bottom, pointsUp ? 9 : 7 + 9)
+        .padding(.horizontal, 10)
+        .padding(.top, pointsUp ? 5 + 5 : 5)
+        .padding(.bottom, pointsUp ? 5 : 5 + 5)
         .background(
             CalloutBubbleShape(pointsUp: pointsUp, arrowX: arrowX)
                 .fill(.ultraThinMaterial)
