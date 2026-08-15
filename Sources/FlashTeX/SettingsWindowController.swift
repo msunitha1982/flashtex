@@ -362,6 +362,14 @@ struct EditorSettingsView: View {
                     }
                     .labelsHidden()
                 }
+
+                FormRow("Error Popups") {
+                    Toggle("Show inline error popups", isOn: Binding(
+                        get: { settings.showErrorPopups },
+                        set: { settings.showErrorPopups = $0 }
+                    ))
+                    .labelsHidden()
+                }
             }
             .padding()
         }

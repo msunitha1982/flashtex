@@ -208,6 +208,16 @@ enum LaTeXCompletion {
         return commands.filter { $0.lowercased().hasPrefix(needle) }
     }
 
+    /// A one-line rendering of what the completed snippet will look like, used
+    /// as the gray preview shown next to each command in the completion panel.
+    /// Placeholders keep their default text so the shape of the insertion is
+    /// obvious (`\frac` → `\frac{num}{den}`).
+    static func preview(for command: String) -> String {
+        guard let template = snippets[command] else { return command }
+        let (text, _) = assemble(template)
+        return text.isEmpty ? command : text
+    }
+
     /// Split a snippet template into literal text and placeholder ranges.
     /// Returns the insertable string and the character ranges (offset within
     /// the returned string) of every placeholder.

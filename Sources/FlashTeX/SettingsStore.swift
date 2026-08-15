@@ -41,6 +41,7 @@ final class SettingsStore: ObservableObject {
         case vimMode
         case formatShortcuts    // [FormatAction: keyEquivalent string]
         case suppressFallbackNotice  // Bool — don't re-warn about engine fallbacks
+        case showErrorPopups    // Bool — show the inline red error popovers
     }
 
     // MARK: - Enums
@@ -160,6 +161,7 @@ final class SettingsStore: ObservableObject {
             Key.formatShortcuts.rawValue: FormatAction.allCases.reduce(into: [String: String]()) { dict, action in
                 dict[action.rawValue] = action.defaultKey
             },
+            Key.showErrorPopups.rawValue: true,
         ]
         defaults.register(defaults: initial)
     }
@@ -319,6 +321,14 @@ final class SettingsStore: ObservableObject {
     var suppressFallbackNotice: Bool {
         get { defaults.bool(forKey: Key.suppressFallbackNotice.rawValue) }
         set { set(newValue, .suppressFallbackNotice) }
+    }
+
+    /// Whether the inline red error popovers are shown at problem lines. The
+    /// dotted underlines and gutter markers stay either way; this only gates
+    /// the floating "TeX Error" bubble.
+    var showErrorPopups: Bool {
+        get { defaults.bool(forKey: Key.showErrorPopups.rawValue) }
+        set { set(newValue, .showErrorPopups) }
     }
 
     // MARK: - Quick formatting shortcuts

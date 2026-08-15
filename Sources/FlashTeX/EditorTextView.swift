@@ -290,6 +290,10 @@ final class EditorTextView: VimTextView {
     }
 
     func updateInlinePopover() {
+        guard SettingsStore.shared.showErrorPopups else {
+            InlineLookUpPopover.dismiss()
+            return
+        }
         guard layoutManager != nil else {
             InlineLookUpPopover.dismiss()
             return
@@ -473,7 +477,7 @@ final class EditorTextView: VimTextView {
             maybeCloseEnvironment()
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.window != nil else { return }
-                self.complete(nil)
+                self.showCompletionPanel()
             }
             return
         }
@@ -505,58 +509,148 @@ final class EditorTextView: VimTextView {
 
     // =====================================================================
     //  LaTeX autocomplete
+    //
+    //  A custom, opaque CompletionPanel replaces the native NSTextView
+    //  completion window (which is transparent, narrow, and live-inserts the
+    //  first match while the user keeps typing). The editor drives the panel:
+    //  typing `\` opens it, further typing refilters, arrows/return/tab select,
+    //  and escape dismisses.
     // =====================================================================
 
-    /// The word to complete on. For LaTeX the partial word must include the
-    /// leading backslash (`\fra` → complete to `\frac`), so we extend the
-    /// default word range backwards across the backslash.
-    override var rangeForUserCompletion: NSRange {
+    private var completionPanel: CompletionPanel?
+    private var completionScrollObserver: NSObjectProtocol?
+
+    /// The range of the `\word` immediately before the caret (the thing being
+    /// completed), or nil when the caret isn't sitting on a command name.
+    private func currentCompletionRange() -> NSRange? {
         let ns = string as NSString
-        let base = super.rangeForUserCompletion
-        guard base.location != NSNotFound, base.location > 0 else { return base }
-        // If the character before the default word is a backslash, include it.
-        let before = ns.character(at: base.location - 1)
-        if before == 92 {   // "\"
-            return NSRange(location: base.location - 1, length: base.length + 1)
+        let caret = selectedRange().location
+        guard caret > 0 else { return nil }
+        // Walk back over letters to find the start of the word.
+        var start = caret
+        while start > 0 {
+            let c = ns.character(at: start - 1)
+            if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) { start -= 1 } else { break }
         }
-        return base
+        // The word must be preceded by a backslash (or be the backslash itself).
+        guard start >= 1, ns.character(at: start - 1) == 92 else { return nil }
+        return NSRange(location: start - 1, length: caret - (start - 1))
     }
 
-    override func completions(forPartialWordRange charRange: NSRange,
-                              indexOfSelectedItem index: UnsafeMutablePointer<Int>?) -> [String]? {
-        let ns = string as NSString
-        guard charRange.location != NSNotFound, charRange.length > 0 else { return nil }
-        let partial = ns.substring(with: charRange)
-        // Only autocomplete when the partial word starts with a backslash —
-        // plain words never get LaTeX command suggestions.
-        guard partial.hasPrefix("\\") else { return nil }
-        let matches = LaTeXCompletion.matches(partial: partial)
-        return matches.isEmpty ? nil : matches
+    /// The on-screen rect of the caret, used to anchor the panel under it.
+    private func caretAnchorRect() -> NSRect {
+        let caret = min(selectedRange().location, (string as NSString).length)
+        return firstRect(forCharacterRange: NSRange(location: caret, length: 0), actualRange: nil)
     }
 
-    override func insertCompletion(_ word: String, forPartialWordRange charRange: NSRange,
-                                   movement: Int, isFinal flag: Bool) {
-        // While the user is still navigating the list, let NSTextView render the
-        // live preview normally.
-        guard flag, let template = LaTeXCompletion.snippets[word] else {
-            super.insertCompletion(word, forPartialWordRange: charRange,
-                                   movement: movement, isFinal: flag)
+    private func completionItems(forPartial partial: String) -> [CompletionPanel.Item] {
+        LaTeXCompletion.matches(partial: partial).map { command in
+            CompletionPanel.Item(command: command,
+                                 preview: LaTeXCompletion.preview(for: command))
+        }
+    }
+
+    private func showCompletionPanel() {
+        guard let range = currentCompletionRange(),
+              let partial = (string as NSString).substring(with: range) as String? else { return }
+        let items = completionItems(forPartial: partial)
+        guard !items.isEmpty else { return }
+
+        if completionPanel == nil {
+            completionPanel = CompletionPanel()
+            observeCompletionScroll()
+        }
+        completionPanel?.show(items: items, anchor: caretAnchorRect(), in: self)
+    }
+
+    /// Called from `didChangeText` while the panel is up: refilter as the user
+    /// types, dismiss when the caret leaves a `\word`.
+    private func refreshCompletionPanel() {
+        guard let panel = completionPanel, panel.isVisible else {
+            dismissCompletionPanel()
+            return
+        }
+        guard let range = currentCompletionRange(),
+              let partial = (string as NSString).substring(with: range) as String? else {
+            dismissCompletionPanel()
+            return
+        }
+        let items = completionItems(forPartial: partial)
+        if items.isEmpty {
+            dismissCompletionPanel()
+        } else {
+            panel.updateItems(items, anchor: caretAnchorRect())
+        }
+    }
+
+    private func dismissCompletionPanel() {
+        completionPanel?.hide()
+        completionPanel = nil
+        if let observer = completionScrollObserver {
+            NotificationCenter.default.removeObserver(observer)
+            completionScrollObserver = nil
+        }
+    }
+
+    /// Dismiss the panel when the document scrolls away from the caret.
+    private func observeCompletionScroll() {
+        guard completionScrollObserver == nil,
+              let clip = enclosingScrollView?.contentView else { return }
+        completionScrollObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: clip, queue: .main) { [weak self] _ in
+                self?.dismissCompletionPanel()
+            }
+    }
+
+    /// Insert a chosen completion: replace the `\word` with its snippet and put
+    /// the caret on the first placeholder so the user types straight over it.
+    func acceptCompletion(_ command: String) {
+        guard let range = currentCompletionRange(),
+              let template = LaTeXCompletion.snippets[command] else {
+            dismissCompletionPanel()
             return
         }
         let (text, placeholders) = LaTeXCompletion.assemble(template)
-        undoManager?.setActionName("Complete \(word)")
-        if shouldChangeText(in: charRange, replacementString: text) {
-            textStorage?.replaceCharacters(in: charRange, with: text)
+        undoManager?.setActionName("Complete \(command)")
+        if shouldChangeText(in: range, replacementString: text) {
+            textStorage?.replaceCharacters(in: range, with: text)
             didChangeText()
         }
-        // Select the first placeholder so the user can type straight over it.
         if let first = placeholders.first {
-            setSelectedRange(NSRange(location: charRange.location + first.location,
+            setSelectedRange(NSRange(location: range.location + first.location,
                                      length: first.length))
         } else {
-            setSelectedRange(NSRange(location: charRange.location + (text as NSString).length,
+            setSelectedRange(NSRange(location: range.location + (text as NSString).length,
                                      length: 0))
         }
+        dismissCompletionPanel()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if let panel = completionPanel, panel.isVisible {
+            switch Int(event.keyCode) {
+            case 125:                       // ↓
+                panel.moveSelection(1)
+                return
+            case 126:                       // ↑
+                panel.moveSelection(-1)
+                return
+            case 36, 76:                    // return / enter
+                if panel.acceptSelection() { return }
+                dismissCompletionPanel()
+            case 48:                        // tab
+                if panel.acceptSelection() { return }
+                dismissCompletionPanel()
+                // fall through to the normal tab handler (snippet expansion)
+            case 53:                        // esc
+                dismissCompletionPanel()
+                return
+            default:
+                break
+            }
+        }
+        super.keyDown(with: event)
     }
 
     // =====================================================================
@@ -639,6 +733,11 @@ final class EditorTextView: VimTextView {
         return count
     }
 
+    override func resignFirstResponder() -> Bool {
+        dismissCompletionPanel()
+        return super.resignFirstResponder()
+    }
+
     override func setSelectedRange(_ charRange: NSRange, affinity: NSSelectionAffinity, stillSelecting: Bool) {
         super.setSelectedRange(charRange, affinity: affinity, stillSelecting: stillSelecting)
         needsDisplay = true
@@ -656,6 +755,7 @@ final class EditorTextView: VimTextView {
         super.didChangeText()
         updateGutter()
         updatePopupVisibilityForCaret()
+        refreshCompletionPanel()
         if !isLoading {
             onTextChanged?()
         }

@@ -32,6 +32,7 @@
 		BB0000000000000000000017 /* String+Fuse.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000019 /* String+Fuse.swift */; };
 		BB0000000000000000000018 /* LatexStructure.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001A /* LatexStructure.swift */; };
 		BB0000000000000000000019 /* LaTeXCompletion.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001B /* LaTeXCompletion.swift */; };
+		BB000000000000000000001A /* CompletionPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001C /* CompletionPanel.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -62,6 +63,7 @@
 		AA0000000000000000000019 /* String+Fuse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Fuse/String+Fuse.swift"; sourceTree = "<group>"; };
 		AA000000000000000000001A /* LatexStructure.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LatexStructure.swift; sourceTree = "<group>"; };
 		AA000000000000000000001B /* LaTeXCompletion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaTeXCompletion.swift; sourceTree = "<group>"; };
+		AA000000000000000000001C /* CompletionPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompletionPanel.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -112,6 +114,7 @@
 				AA0000000000000000000019 /* String+Fuse.swift */,
 				AA000000000000000000001A /* LatexStructure.swift */,
 				AA000000000000000000001B /* LaTeXCompletion.swift */,
+				AA000000000000000000001C /* CompletionPanel.swift */,
 			);
 			path = Sources/FlashTeX;
 			sourceTree = "<group>";
@@ -220,6 +223,7 @@
 				BB0000000000000000000017 /* String+Fuse.swift in Sources */,
 				BB0000000000000000000018 /* LatexStructure.swift in Sources */,
 				BB0000000000000000000019 /* LaTeXCompletion.swift in Sources */,
+				BB000000000000000000001A /* CompletionPanel.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
