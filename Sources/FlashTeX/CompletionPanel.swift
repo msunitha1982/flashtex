@@ -4,15 +4,23 @@ import AppKit
 //
 // Replaces the native NSTextView completion window (which is semi-transparent,
 // narrow, unstylable, auto-inserts the first match while the user keeps typing,
-// and double-inserts on accept). This panel is:
-//   * opaque, with a Catppuccin surface background
-//   * wider than the system popup, sized to its longest entry
-//   * highlight = the Catppuccin blue accent (with a readable text colour)
-//   * each row shows the command plus a gray preview of the snippet it inserts
-//   * non-activating, so the editor keeps focus while the panel is open
+// and double-inserts on accept). Modeled on the battle-tested design used by
+// krzyzanowskim/STTextView (a popular AppKit text-view framework):
 //
-// The editor drives it: show/update/accept are called from EditorTextView in
-// response to typing. The panel never edits the document itself.
+//   * the panel is a NON-KEY child window of the editor, so the editor keeps
+//     key status — the caret stays active, the Edit menu/undo stay live, and
+//     there is no focus-stealing or grayed-out selection while it is open
+//   * keyboard input is captured by a LOCAL event monitor installed while the
+//     panel is visible: arrows move the selection, tab/return/enter accept,
+//     escape dismisses, and every other key is returned untouched so it flows
+//     through the normal NSTextView machinery (which refilters the list)
+//   * the panel auto-dismisses when the editor window resigns key status
+//     (e.g. the user clicks another window or switches apps)
+//   * the first match is pre-selected, so tab/return immediately accept it
+//   * the row highlight is drawn by the cell view (a non-key window would draw
+//     a gray system selection), using the Catppuccin blue accent with a
+//     readable contrast colour
+//   * each row shows the command plus a gray preview of the snippet it inserts
 
 final class CompletionPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate {
 
@@ -25,24 +33,34 @@ final class CompletionPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate
     private let tableView = NSTableView()
     private let cellId = NSUserInterfaceItemIdentifier("completionCell")
     private let rowHeight: CGFloat = 26
+    private let maxVisibleRows = 7
 
     private var items: [Item] = []
     private weak var host: EditorTextView?
-
-    override var canBecomeKey: Bool { false }
-    override var canBecomeMain: Bool { false }
+    private var keyMonitor: Any?
+    private var resignObserver: NSObjectProtocol?
+    private var isChildAttached = false
+    private var isDismissing = false
 
     init() {
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 320, height: 100),
-                   styleMask: [.borderless, .nonactivatingPanel],
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 360, height: 100),
+                   styleMask: [.borderless],
                    backing: .buffered, defer: false)
-        isFloatingPanel = true
-        level = .floating
+        level = .popUpMenu
         hidesOnDeactivate = true
         isReleasedWhenClosed = false
-        backgroundColor = Theme.nsColor("surface0")
-        isOpaque = true
+        isOpaque = false
+        backgroundColor = .clear
         hasShadow = true
+
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 100))
+        content.wantsLayer = true
+        content.layer?.backgroundColor = Theme.nsColor("surface0").cgColor
+        content.layer?.cornerRadius = 8
+        content.layer?.borderWidth = 1
+        content.layer?.borderColor = Theme.nsColor("surface1").cgColor
+        content.layer?.masksToBounds = true
+        contentView = content
 
         let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("col"))
         col.resizingMask = .autoresizingMask
@@ -54,33 +72,57 @@ final class CompletionPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate
         tableView.focusRingType = .none
         tableView.intercellSpacing = NSSize(width: 0, height: 0)
         tableView.allowsEmptySelection = false
+        tableView.allowsMultipleSelection = false
         tableView.dataSource = self
         tableView.delegate = self
         tableView.target = self
         tableView.action = #selector(rowClicked)
 
         scrollView.documentView = tableView
-        scrollView.hasVerticalScroller = true
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
-        contentView = scrollView
+        scrollView.scrollerStyle = .overlay
+        scrollView.autohidesScrollers = true
+        scrollView.autoresizingMask = [.width, .height]
+        scrollView.frame = content.bounds
+        content.addSubview(scrollView)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    deinit {
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+        if let observer = resignObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
     // MARK: - Presentation
 
-    /// Show the panel with an initial item list, anchored to the caret.
+    /// Show the panel with an initial item list, anchored to the caret. The
+    /// editor keeps key status; a local event monitor routes the keyboard.
     func show(items: [Item], anchor: NSRect, in host: EditorTextView) {
         self.host = host
         self.items = items
         tableView.reloadData()
         if !items.isEmpty {
             tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+            tableView.scrollRowToVisible(0)
         }
         sizeToFitItems()
         position(anchor: anchor)
+
+        if let parent = host.window {
+            if !isChildAttached {
+                parent.addChildWindow(self, ordered: .above)
+                isChildAttached = true
+            }
+            installResignObserver(on: parent)
+        }
         orderFrontRegardless()
+        installKeyMonitor()
     }
 
     /// Refilter: replace the item list (same selection index if possible) and
@@ -99,26 +141,17 @@ final class CompletionPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate
         if isVisible { orderFront(nil) }
     }
 
-    /// Move the selection without touching the document.
-    func moveSelection(_ delta: Int) {
-        guard !items.isEmpty else { return }
-        let count = items.count
-        var row = tableView.selectedRow
-        row = row < 0 ? 0 : ((row + delta) % count + count) % count
-        tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        tableView.scrollRowToVisible(row)
-    }
-
     /// Accept the highlighted row: hand the command to the editor (which owns
     /// the snippet insertion) and hide. Returns false when there was nothing
-    /// to accept, so the caller can fall through to normal handling.
+    /// to accept, so the caller can forward the key instead.
     @discardableResult
     func acceptSelection() -> Bool {
         let row = tableView.selectedRow
         guard !items.isEmpty, row >= 0, row < items.count else { return false }
         let command = items[row].command
-        hide()
-        host?.acceptCompletion(command)
+        let editor = host
+        dismiss()
+        editor?.acceptCompletion(command)
         return true
     }
 
@@ -129,9 +162,75 @@ final class CompletionPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate
         acceptSelection()
     }
 
-    func hide() {
+    func dismiss() {
+        guard !isDismissing else { return }
+        isDismissing = true
+
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyMonitor = nil
+        }
+        if let observer = resignObserver {
+            NotificationCenter.default.removeObserver(observer)
+            resignObserver = nil
+        }
+        if isChildAttached, let parent = host?.window {
+            parent.removeChildWindow(self)
+            isChildAttached = false
+        }
         orderOut(nil)
         host = nil
+        items = []
+        isDismissing = false
+    }
+
+    /// Dismiss when the editor window stops being key — the user clicked
+    /// another window or switched apps.
+    private func installResignObserver(on parent: NSWindow) {
+        guard resignObserver == nil else { return }
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: parent, queue: .main) { [weak self] _ in
+                self?.dismiss()
+            }
+    }
+
+    // MARK: - Keyboard (local event monitor — the panel is never key)
+
+    /// Intercept keys only while the panel is visible. Everything except the
+    /// navigation keys is returned untouched so it reaches the editor, whose
+    /// normal insertion path refilters the list via `didChangeText`.
+    private func installKeyMonitor() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, self.isVisible else { return event }
+            switch Int(event.keyCode) {
+            case 125:                       // ↓
+                self.moveSelection(1)
+                return nil
+            case 126:                       // ↑
+                self.moveSelection(-1)
+                return nil
+            case 36, 76, 48:                // return / enter / tab
+                if self.acceptSelection() { return nil }
+                return event
+            case 53:                        // esc
+                self.dismiss()
+                return nil
+            default:
+                return event
+            }
+        }
+    }
+
+    /// Move the selection without touching the document.
+    func moveSelection(_ delta: Int) {
+        guard !items.isEmpty else { return }
+        let count = items.count
+        var row = tableView.selectedRow
+        row = row < 0 ? 0 : ((row + delta) % count + count) % count
+        tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        tableView.scrollRowToVisible(row)
     }
 
     // MARK: - Layout
@@ -143,10 +242,12 @@ final class CompletionPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate
             let str = (item.command + "  " + item.preview) as NSString
             maxW = max(maxW, str.size(withAttributes: [.font: font]).width)
         }
-        let width = min(max(maxW + 44, 320), 480)
-        let maxVisible = 8
-        let height = max(CGFloat(min(items.count, maxVisible)), 1) * rowHeight + 2
+        let width = min(max(maxW + 52, 360), 520)
+        let height = max(CGFloat(min(items.count, maxVisibleRows)), 1) * rowHeight + 2
         setContentSize(NSSize(width: width, height: height))
+        scrollView.hasVerticalScroller = items.count > maxVisibleRows
+        contentView?.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        scrollView.frame = contentView?.bounds ?? NSRect(x: 0, y: 0, width: width, height: height)
         tableView.reloadData()
     }
 
@@ -178,7 +279,10 @@ final class CompletionPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        tableView.reloadData()   // repaint the blue highlight
+        tableView.enumerateAvailableRowViews { rowView, row in
+            guard let cell = rowView.view(atColumn: 0) as? CompletionCellView else { return }
+            cell.isSelectedRow = row == tableView.selectedRow
+        }
     }
 }
 
@@ -193,6 +297,8 @@ final class CompletionCellView: NSTableCellView {
     var preview = "" { didSet { needsDisplay = true } }
     var isSelectedRow = false { didSet { needsDisplay = true } }
 
+    override var isFlipped: Bool { true }
+
     override func draw(_ dirtyRect: NSRect) {
         let rect = bounds
         let selected = isSelectedRow
@@ -206,15 +312,15 @@ final class CompletionCellView: NSTableCellView {
         let commandColor = selected ? contrast : Theme.editorText
         let previewColor = selected ? contrast.withAlphaComponent(0.72) : Theme.secondaryText
 
-        // Vertically centre the text in the row.
+        // Vertically centre the text in the row (flipped coordinates).
         let baseline = rect.midY + (font.ascender + font.descender) / 2
-        let x: CGFloat = 10
+        let x: CGFloat = 12
 
         (command as NSString).draw(at: NSPoint(x: x, y: baseline),
                                    withAttributes: [.font: font, .foregroundColor: commandColor])
         if !preview.isEmpty {
             let cmdW = (command as NSString).size(withAttributes: [.font: font]).width
-            (preview as NSString).draw(at: NSPoint(x: x + cmdW + 10, y: baseline),
+            (preview as NSString).draw(at: NSPoint(x: x + cmdW + 12, y: baseline),
                                        withAttributes: [.font: font, .foregroundColor: previewColor])
         }
     }

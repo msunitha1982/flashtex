@@ -584,7 +584,7 @@ final class EditorTextView: VimTextView {
     }
 
     private func dismissCompletionPanel() {
-        completionPanel?.hide()
+        completionPanel?.dismiss()
         completionPanel = nil
         if let observer = completionScrollObserver {
             NotificationCenter.default.removeObserver(observer)
@@ -731,11 +731,6 @@ final class EditorTextView: VimTextView {
             searchRange = r.upperBound..<haystack.endIndex
         }
         return count
-    }
-
-    override func resignFirstResponder() -> Bool {
-        dismissCompletionPanel()
-        return super.resignFirstResponder()
     }
 
     override func setSelectedRange(_ charRange: NSRange, affinity: NSSelectionAffinity, stillSelecting: Bool) {
