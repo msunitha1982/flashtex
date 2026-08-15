@@ -546,7 +546,8 @@ final class EditorTextView: VimTextView {
     private func completionItems(forPartial partial: String) -> [CompletionPanel.Item] {
         LaTeXCompletion.matches(partial: partial).map { command in
             CompletionPanel.Item(command: command,
-                                 preview: LaTeXCompletion.preview(for: command))
+                                 preview: LaTeXCompletion.preview(for: command),
+                                 highlight: partial)
         }
     }
 

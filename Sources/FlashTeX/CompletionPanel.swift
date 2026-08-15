@@ -4,63 +4,60 @@ import AppKit
 //
 // Replaces the native NSTextView completion window (which is semi-transparent,
 // narrow, unstylable, auto-inserts the first match while the user keeps typing,
-// and double-inserts on accept). Modeled on the battle-tested design used by
-// krzyzanowskim/STTextView (a popular AppKit text-view framework):
+// and double-inserts on accept). Presentation is a plain NSPopover anchored to
+// the caret (the approach used by the well-known NCRAutocompleteTextView
+// example), so AppKit handles sizing and positioning:
 //
-//   * the panel is a NON-KEY child window of the editor, so the editor keeps
-//     key status — the caret stays active, the Edit menu/undo stay live, and
-//     there is no focus-stealing or grayed-out selection while it is open
+//   * the box height is set exactly via `popover.contentSize` from the number
+//     of rows, so the list is never clipped or tiny
+//   * `.transient` behavior closes the popover the moment the user clicks
+//     anywhere else (editor, another window, another app)
+//   * the popover never becomes key: the editor keeps the caret active, the
+//     Edit menu and undo stay live, and nothing grays out
 //   * keyboard input is captured by a LOCAL event monitor installed while the
-//     panel is visible: arrows move the selection, tab/return/enter accept,
-//     escape dismisses, and every other key is returned untouched so it flows
-//     through the normal NSTextView machinery (which refilters the list)
-//   * the panel auto-dismisses when the editor window resigns key status
-//     (e.g. the user clicks another window or switches apps)
+//     popover is visible: down/up move the selection, tab/return/enter accept,
+//     escape/delete/space dismiss, and every other key is returned untouched so
+//     it flows through the normal NSTextView machinery and refilters the list
 //   * the first match is pre-selected, so tab/return immediately accept it
-//   * the row highlight is drawn by the cell view (a non-key window would draw
-//     a gray system selection), using the Catppuccin blue accent with a
-//     readable contrast colour
-//   * each row shows the command plus a gray preview of the snippet it inserts
+//   * the row highlight is drawn by the cell view using the Catppuccin blue
+//     accent with a readable contrast colour
+//   * each row shows the command (typed prefix bolded) plus a gray preview of
+//     the snippet it inserts
 
-final class CompletionPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate {
+final class CompletionPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
 
     struct Item {
         let command: String
         let preview: String
+        /// The typed partial — its leading prefix is bolded in the command.
+        let highlight: String
     }
 
+    private let popover = NSPopover()
     private let scrollView = NSScrollView()
     private let tableView = NSTableView()
     private let cellId = NSUserInterfaceItemIdentifier("completionCell")
     private let rowHeight: CGFloat = 26
-    private let maxVisibleRows = 7
+    private let maxVisibleRows = 8
 
     private var items: [Item] = []
     private weak var host: EditorTextView?
     private var keyMonitor: Any?
-    private var resignObserver: NSObjectProtocol?
-    private var isChildAttached = false
-    private var isDismissing = false
+    private var closeObserver: NSObjectProtocol?
 
-    init() {
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 360, height: 100),
-                   styleMask: [.borderless],
-                   backing: .buffered, defer: false)
-        level = .popUpMenu
-        hidesOnDeactivate = true
-        isReleasedWhenClosed = false
-        isOpaque = false
-        backgroundColor = .clear
-        hasShadow = true
+    var isVisible: Bool { popover.isShown }
+
+    override init() {
+        super.init()
+
+        popover.behavior = .transient
+        popover.animates = false
 
         let content = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 100))
         content.wantsLayer = true
         content.layer?.backgroundColor = Theme.nsColor("surface0").cgColor
         content.layer?.cornerRadius = 8
-        content.layer?.borderWidth = 1
-        content.layer?.borderColor = Theme.nsColor("surface1").cgColor
         content.layer?.masksToBounds = true
-        contentView = content
 
         let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("col"))
         col.resizingMask = .autoresizingMask
@@ -86,23 +83,33 @@ final class CompletionPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate
         scrollView.autoresizingMask = [.width, .height]
         scrollView.frame = content.bounds
         content.addSubview(scrollView)
-    }
 
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        let vc = NSViewController()
+        vc.view = content
+        popover.contentViewController = vc
+
+        // The popover can close on its own (`.transient` outside-click, app
+        // deactivation): clean up the key monitor so it isn't left installed.
+        closeObserver = NotificationCenter.default.addObserver(
+            forName: NSPopover.didCloseNotification,
+            object: popover, queue: .main) { [weak self] _ in
+                self?.cleanup()
+            }
+    }
 
     deinit {
         if let monitor = keyMonitor {
             NSEvent.removeMonitor(monitor)
         }
-        if let observer = resignObserver {
+        if let observer = closeObserver {
             NotificationCenter.default.removeObserver(observer)
         }
     }
 
     // MARK: - Presentation
 
-    /// Show the panel with an initial item list, anchored to the caret. The
-    /// editor keeps key status; a local event monitor routes the keyboard.
+    /// Show the popover with an initial item list, anchored to the caret.
+    /// `anchor` is in screen coordinates (from the editor's caret rect).
     func show(items: [Item], anchor: NSRect, in host: EditorTextView) {
         self.host = host
         self.items = items
@@ -111,22 +118,15 @@ final class CompletionPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate
             tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
             tableView.scrollRowToVisible(0)
         }
-        sizeToFitItems()
-        position(anchor: anchor)
+        sizeToFit()
 
-        if let parent = host.window {
-            if !isChildAttached {
-                parent.addChildWindow(self, ordered: .above)
-                isChildAttached = true
-            }
-            installResignObserver(on: parent)
-        }
-        orderFrontRegardless()
+        let local = host.convert(anchor, from: nil)
         installKeyMonitor()
+        popover.show(relativeTo: local, of: host, preferredEdge: .maxY)
     }
 
     /// Refilter: replace the item list (same selection index if possible) and
-    /// keep the panel glued to the caret.
+    /// resize in place. The popover stays anchored where it was first shown.
     func updateItems(_ newItems: [Item], anchor: NSRect) {
         let prev = tableView.selectedRow
         items = newItems
@@ -136,13 +136,11 @@ final class CompletionPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate
             tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
             tableView.scrollRowToVisible(row)
         }
-        sizeToFitItems()
-        position(anchor: anchor)
-        if isVisible { orderFront(nil) }
+        sizeToFit()
     }
 
     /// Accept the highlighted row: hand the command to the editor (which owns
-    /// the snippet insertion) and hide. Returns false when there was nothing
+    /// the snippet insertion) and close. Returns false when there was nothing
     /// to accept, so the caller can forward the key instead.
     @discardableResult
     func acceptSelection() -> Bool {
@@ -163,47 +161,30 @@ final class CompletionPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate
     }
 
     func dismiss() {
-        guard !isDismissing else { return }
-        isDismissing = true
+        cleanup()
+        if popover.isShown {
+            popover.close()
+        }
+    }
 
+    private func cleanup() {
         if let monitor = keyMonitor {
             NSEvent.removeMonitor(monitor)
             keyMonitor = nil
         }
-        if let observer = resignObserver {
-            NotificationCenter.default.removeObserver(observer)
-            resignObserver = nil
-        }
-        if isChildAttached, let parent = host?.window {
-            parent.removeChildWindow(self)
-            isChildAttached = false
-        }
-        orderOut(nil)
         host = nil
         items = []
-        isDismissing = false
     }
 
-    /// Dismiss when the editor window stops being key — the user clicked
-    /// another window or switched apps.
-    private func installResignObserver(on parent: NSWindow) {
-        guard resignObserver == nil else { return }
-        resignObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didResignKeyNotification,
-            object: parent, queue: .main) { [weak self] _ in
-                self?.dismiss()
-            }
-    }
+    // MARK: - Keyboard (local event monitor — the popover is never key)
 
-    // MARK: - Keyboard (local event monitor — the panel is never key)
-
-    /// Intercept keys only while the panel is visible. Everything except the
+    /// Intercept keys only while the popover is visible. Everything except the
     /// navigation keys is returned untouched so it reaches the editor, whose
     /// normal insertion path refilters the list via `didChangeText`.
     private func installKeyMonitor() {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, self.isVisible else { return event }
+            guard let self, self.popover.isShown else { return event }
             switch Int(event.keyCode) {
             case 125:                       // ↓
                 self.moveSelection(1)
@@ -217,6 +198,9 @@ final class CompletionPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate
             case 53:                        // esc
                 self.dismiss()
                 return nil
+            case 51, 49:                    // delete / space
+                self.dismiss()
+                return event                // let the editor handle the delete/space
             default:
                 return event
             }
@@ -235,7 +219,7 @@ final class CompletionPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate
 
     // MARK: - Layout
 
-    private func sizeToFitItems() {
+    private func sizeToFit() {
         let font = Theme.editorFont
         var maxW: CGFloat = 0
         for item in items {
@@ -244,23 +228,8 @@ final class CompletionPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate
         }
         let width = min(max(maxW + 52, 360), 520)
         let height = max(CGFloat(min(items.count, maxVisibleRows)), 1) * rowHeight + 2
-        setContentSize(NSSize(width: width, height: height))
+        popover.contentSize = NSSize(width: width, height: height)
         scrollView.hasVerticalScroller = items.count > maxVisibleRows
-        contentView?.frame = NSRect(x: 0, y: 0, width: width, height: height)
-        scrollView.frame = contentView?.bounds ?? NSRect(x: 0, y: 0, width: width, height: height)
-        tableView.reloadData()
-    }
-
-    private func position(anchor: NSRect) {
-        let screen = host?.window?.screen ?? NSScreen.main
-        let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let w = frame.width
-        let h = frame.height
-        var x = anchor.minX
-        x = min(max(x, visible.minX + 4), visible.maxX - w - 4)
-        let below = anchor.minY - h - 6
-        let y = below >= visible.minY + 4 ? below : anchor.maxY + 6
-        setFrameOrigin(NSPoint(x: x, y: y))
     }
 
     // MARK: - Table
@@ -274,6 +243,7 @@ final class CompletionPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate
         let item = items[row]
         cell.command = item.command
         cell.preview = item.preview
+        cell.highlight = item.highlight
         cell.isSelectedRow = tableView.selectedRow == row
         return cell
     }
@@ -288,13 +258,14 @@ final class CompletionPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate
 
 // MARK: - Row view
 
-/// A single completion row: the command, then a gray preview of the snippet
-/// it would insert. The selected row is filled with the Catppuccin blue accent
-/// and the text flips to a readable contrast colour.
+/// A single completion row: the command (typed prefix bolded), then a gray
+/// preview of the snippet it would insert. The selected row is filled with the
+/// Catppuccin blue accent and the text flips to a readable contrast colour.
 final class CompletionCellView: NSTableCellView {
 
     var command = "" { didSet { needsDisplay = true } }
     var preview = "" { didSet { needsDisplay = true } }
+    var highlight = "" { didSet { needsDisplay = true } }
     var isSelectedRow = false { didSet { needsDisplay = true } }
 
     override var isFlipped: Bool { true }
@@ -316,8 +287,22 @@ final class CompletionCellView: NSTableCellView {
         let baseline = rect.midY + (font.ascender + font.descender) / 2
         let x: CGFloat = 12
 
-        (command as NSString).draw(at: NSPoint(x: x, y: baseline),
-                                   withAttributes: [.font: font, .foregroundColor: commandColor])
+        // Command with the typed prefix bolded.
+        var cmdX = x
+        let hlCount = min(highlight.count, command.count)
+        if hlCount > 0 {
+            let boldStr = (command as NSString).substring(to: hlCount) as NSString
+            let boldFont = NSFont.monospacedSystemFont(ofSize: Theme.editorFontSize, weight: .bold)
+            boldStr.draw(at: NSPoint(x: cmdX, y: baseline),
+                         withAttributes: [.font: boldFont, .foregroundColor: commandColor])
+            cmdX += boldStr.size(withAttributes: [.font: boldFont]).width
+        }
+        if hlCount < command.count {
+            let restStr = (command as NSString).substring(from: hlCount) as NSString
+            restStr.draw(at: NSPoint(x: cmdX, y: baseline),
+                         withAttributes: [.font: font, .foregroundColor: commandColor])
+        }
+
         if !preview.isEmpty {
             let cmdW = (command as NSString).size(withAttributes: [.font: font]).width
             (preview as NSString).draw(at: NSPoint(x: x + cmdW + 12, y: baseline),
