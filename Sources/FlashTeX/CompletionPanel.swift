@@ -372,8 +372,13 @@ final class CompletionCellView: NSTableCellView {
         let commandColor = selected ? contrast : Theme.editorText
         let previewColor = selected ? contrast.withAlphaComponent(0.72) : Theme.secondaryText
 
-        // Vertically centre the text in the row (flipped coordinates).
-        let baseline = rect.midY + (font.ascender + font.descender) / 2
+        // Vertically centre the text's full line box in the row. In a flipped
+        // view, `NSString.draw(at:)` treats the point as the TOP-LEFT of the
+        // text (not the baseline), so `textTop` is the top of the line box:
+        //   lineHeight = ascender - descender + leading  (~15.3 for the 13pt
+        //   editor font), centred in the 26pt row leaves ~5pt above and below.
+        let lineHeight = font.ascender - font.descender + font.leading
+        let textTop = rect.midY - lineHeight / 2
         let x: CGFloat = CompletionPanel.textPadding
 
         // Command with the typed prefix bolded.
@@ -382,19 +387,19 @@ final class CompletionCellView: NSTableCellView {
         if hlCount > 0 {
             let boldStr = (command as NSString).substring(to: hlCount) as NSString
             let boldFont = NSFont.monospacedSystemFont(ofSize: Theme.editorFontSize, weight: .bold)
-            boldStr.draw(at: NSPoint(x: cmdX, y: baseline),
+            boldStr.draw(at: NSPoint(x: cmdX, y: textTop),
                          withAttributes: [.font: boldFont, .foregroundColor: commandColor])
             cmdX += boldStr.size(withAttributes: [.font: boldFont]).width
         }
         if hlCount < command.count {
             let restStr = (command as NSString).substring(from: hlCount) as NSString
-            restStr.draw(at: NSPoint(x: cmdX, y: baseline),
+            restStr.draw(at: NSPoint(x: cmdX, y: textTop),
                          withAttributes: [.font: font, .foregroundColor: commandColor])
         }
 
         if !preview.isEmpty {
             let cmdW = (command as NSString).size(withAttributes: [.font: font]).width
-            (preview as NSString).draw(at: NSPoint(x: x + cmdW + 12, y: baseline),
+            (preview as NSString).draw(at: NSPoint(x: x + cmdW + 12, y: textTop),
                                        withAttributes: [.font: font, .foregroundColor: previewColor])
         }
     }
