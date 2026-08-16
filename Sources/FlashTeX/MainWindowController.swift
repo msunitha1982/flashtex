@@ -563,10 +563,49 @@ final class MainWindowController: NSWindowController {
         }
     }
 
+    /// Vector SVG export via poppler's `pdftocairo`. pdftocairo writes a
+    /// single SVG file (multi-page documents carry one `<page>` per sheet), so
+    /// this is always one destination file.
     @objc func exportSVG() {
-        exportPages(extension: "svg") { [weak self] page in
-            self?.renderPageSVG(page)
+        guard let src = lastPdfURL else { return }
+        guard let tool = TeX.findExecutable("pdftocairo") else {
+            presentError(NSError(domain: "FlashTeX", code: 11,
+                                 userInfo: [NSLocalizedDescriptionKey:
+                                    "Vector SVG export needs pdftocairo from poppler. Install it, e.g. `brew install poppler` or `sudo port install poppler`, then relaunch FlashTeX."]))
+            return
         }
+        let base = currentFileURL?.deletingPathExtension().lastPathComponent ?? "document"
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType.svg]
+        panel.nameFieldStringValue = "\(base).svg"
+        panel.prompt = "Export"
+        guard panel.runModal() == .OK, let dest = panel.url else { return }
+
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FlashTeX-SVG-\(UUID().uuidString)")
+        let proc = Process()
+        proc.executableURL = tool
+        proc.arguments = ["-svg", "-q", src.path, tmp.path]
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch {
+            presentError(NSError(domain: "FlashTeX", code: 12,
+                                 userInfo: [NSLocalizedDescriptionKey: "Could not launch pdftocairo."]))
+            return
+        }
+        guard proc.terminationStatus == 0, FileManager.default.fileExists(atPath: tmp.path) else {
+            presentError(NSError(domain: "FlashTeX", code: 13,
+                                 userInfo: [NSLocalizedDescriptionKey: "pdftocairo could not convert the PDF to SVG."]))
+            return
+        }
+        do {
+            try FileManager.default.copyItem(at: tmp, to: dest)
+        } catch {
+            presentError(NSError(domain: "FlashTeX", code: 14,
+                                 userInfo: [NSLocalizedDescriptionKey: "Could not write the SVG file."]))
+        }
+        try? FileManager.default.removeItem(at: tmp)
     }
 
     /// Shared export flow: a single-page document writes one file to the chosen
@@ -632,21 +671,6 @@ final class MainWindowController: NSWindowController {
         cg.interpolationQuality = .high
         page.draw(with: .mediaBox, to: cg)
         return rep.representation(using: .png, properties: [:])
-    }
-
-    /// Standalone SVG of one page: a page-sized vector canvas embedding the
-    /// page rasterized at 4× (≈288 DPI for US Letter), so it opens and scales
-    /// in any browser/SVG editor without external fonts.
-    private func renderPageSVG(_ page: PDFPage, scale: CGFloat = 4.0) -> Data? {
-        let bounds = page.bounds(for: .mediaBox)
-        guard let png = renderPagePNG(page, scale: scale) else { return nil }
-        let svg = """
-        <?xml version="1.0" encoding="UTF-8"?>
-        <svg xmlns="http://www.w3.org/2000/svg" width="\(bounds.width)pt" height="\(bounds.height)pt" viewBox="0 0 \(bounds.width) \(bounds.height)">
-        <image x="0" y="0" width="\(bounds.width)" height="\(bounds.height)" href="data:image/png;base64,\(png.base64EncodedString())"/>
-        </svg>
-        """
-        return svg.data(using: .utf8)
     }
 
     // MARK: - Completion personalization

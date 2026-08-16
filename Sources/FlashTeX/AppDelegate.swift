@@ -238,7 +238,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         windowItem.submenu = windowMenu
         NSApp.windowsMenu = windowMenu
 
+        // ---- Help menu ------------------------------------------------------
+        // The Help menu's search field is native: setting NSApp.helpMenu makes
+        // macOS add the magnifier to this menu, and it indexes every item in
+        // the main menu automatically — so any command, with its shortcut, is
+        // already "searchable help". The reference submenus below exist purely
+        // to put Vim-mode and LaTeX knowledge into that same native index.
+        let helpItem = NSMenuItem()
+        main.addItem(helpItem)
+        let helpMenu = NSMenu(title: "Help")
+        NSApp.helpMenu = helpMenu
+
+        helpMenu.addItem(helpSubmenu(title: "Vim Mode", entries: [
+            "Move left / right / up / down (h l k j)",
+            "Next word (w) · back a word (b) · end of word (e)",
+            "Start of line (0) · end of line ($) · first non-blank (^)",
+            "Top of file (gg) · bottom of file (G) · go to line (5G)",
+            "Insert before cursor (i) · after cursor (a)",
+            "Insert at line start (I) · end of line (A)",
+            "Open line below (o) · above (O)",
+            "Delete character (x) · delete line (dd) · delete word (dw)",
+            "Delete inner word (diw) · delete to end of line (D)",
+            "Change word (cw) · inner word (ciw) · to end of line (C)",
+            "Replace character (r) · replace mode (R)",
+            "Yank line (yy) · yank word (yw) · paste (p) · paste before (P)",
+            "Undo (u) · redo (Ctrl-R)",
+            "Visual mode (v) · visual line (V) · visual inner word (viw)",
+            "Find character (f) · find backward (F) · till (t) · repeat (; ,)",
+            "Search (/) · search backward (?) · next (n) · previous (N)",
+            "Count prefix (3w, 5dd, 2dw)",
+            "Named register (\"a  then yy / p)",
+            "Exit insert mode (Esc)",
+            "Enable / disable in Settings → Editing → Vim Mode",
+        ]))
+        helpMenu.addItem(helpSubmenu(title: "LaTeX", entries: [
+            "Start a command with a backslash (\\fra…) and pick from the popup",
+            "Environment snippets: type the name, then press Tab",
+            "Insert a fraction: \\frac + Tab, then type into the {} slots",
+            "Wrap selection in formatting via ⌘B / ⌘I / ⌘K (rebindable in Settings)",
+            "Compile on save, or force with ⌘R (Compile → Compile Now)",
+            "Find / replace with ⌘F (native find bar)",
+        ]))
+        helpItem.submenu = helpMenu
+
         return main
+    }
+
+    /// Builds a Help reference submenu. The entries are searchable through the
+    /// Help menu's native search field; selecting one is a no-op reference.
+    private func helpSubmenu(title: String, entries: [String]) -> NSMenuItem {
+        let parent = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let menu = NSMenu(title: title)
+        for entry in entries {
+            let mi = NSMenuItem(title: entry, action: #selector(showHelpReference(_:)), keyEquivalent: "")
+            mi.target = self
+            menu.addItem(mi)
+        }
+        parent.submenu = menu
+        return parent
+    }
+
+    @objc private func showHelpReference(_ sender: Any?) {
+        // Reference entries are intentionally inert — the Help search field is
+        // their purpose.
     }
 
     // MARK: - Menu construction helpers
