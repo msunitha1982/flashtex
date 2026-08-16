@@ -21,6 +21,11 @@ final class EditorTextView: NSTextView {
     var onFontSizeChanged: (() -> Void)?
     var isLoading = false
 
+    /// The most recent character edit (UTF-16 range), captured from the text
+    /// storage's edit notifications so the proximity renderer can decide
+    /// whether the edit was local to a single math block.
+    private(set) var lastEditRange = NSRange(location: NSNotFound, length: 0)
+
     private let padding: CGFloat = 20
     private var gutterDigits = 3
     private var settingsObserver: NSObjectProtocol?
@@ -751,6 +756,21 @@ final class EditorTextView: NSTextView {
         // While the caret sits on a line the error popup blocks, keep the popup
         // hidden; the moment the caret leaves, bring it back.
         updatePopupVisibilityForCaret()
+    }
+
+    /// NSTextView calls this before every character edit (typing, paste,
+    /// delete, palette inserts) with the exact UTF-16 range the change will
+    /// affect. Attribute-only changes arrive with a nil replacement and are
+    /// ignored — only real typing updates `lastEditRange`, which the proximity
+    /// renderer reads to tell a local (single-block) edit from a global one.
+    override func shouldChangeText(in affectedCharRange: NSRange,
+                                   replacementString: String?) -> Bool {
+        let allowed = super.shouldChangeText(in: affectedCharRange,
+                                             replacementString: replacementString)
+        if allowed, replacementString != nil, !isLoading {
+            lastEditRange = affectedCharRange
+        }
+        return allowed
     }
 
     override func didChangeText() {

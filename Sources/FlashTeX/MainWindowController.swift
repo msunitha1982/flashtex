@@ -16,6 +16,7 @@ final class MainWindowController: NSWindowController {
     private let editor = EditorTextView.makeEditor()
     private let preview = PreviewView()
     private let compiler = Compiler()
+    private let proximity = ProximityRenderer()
     private let highlighter = LaTeXSyntaxHighlighter()
     private let scrollView = NSScrollView()
 
@@ -236,8 +237,18 @@ final class MainWindowController: NSWindowController {
             if !(self.outlineItem?.isCollapsed ?? true) {
                 self.refreshOutline()
             }
-            if self.autoCompile {
-                self.compiler.scheduleCompile(source: self.editor.string)
+            guard self.autoCompile else { return }
+            let source = self.editor.string
+            // A character edit strictly inside one safe display-math block is
+            // rendered in isolation and patched; everything else re-runs the
+            // full pipeline.
+            if let block = self.proximity.localBlock(editRange: self.editor.lastEditRange,
+                                                     source: source) {
+                self.compiler.cancelScheduledCompile()
+                self.proximity.scheduleLocalRender(block: block, source: source)
+            } else {
+                self.proximity.invalidatePendingLocal()
+                self.compiler.scheduleCompile(source: source)
             }
         }
 
@@ -247,10 +258,20 @@ final class MainWindowController: NSWindowController {
 
         compiler.onStatusStarted = { [weak self] in
             self?.beginCompilingIndicator()
+            // A full compile supersedes any pending local render.
+            self?.proximity.invalidatePendingLocal()
         }
 
         compiler.onFinished = { [weak self] report in
             self?.handleCompileFinished(report)
+        }
+
+        proximity.onApplyPatch = { [weak self] page, rect, image in
+            self?.preview.applyPatch(page: page, bounds: rect, image: image)
+        }
+
+        proximity.onFallbackToFullCompile = { [weak self] source in
+            self?.compiler.scheduleCompile(source: source)
         }
     }
 
@@ -270,6 +291,10 @@ final class MainWindowController: NSWindowController {
             currentErrors = []
             editor.updateDiagnostics([])
             preview.load(pdfURL: pdfURL)
+            // Rebuild the block → region map from the new synctex data so the
+            // next local edit knows where to patch.
+            proximity.remap(pdfURL: pdfURL, document: preview.document,
+                            source: editor.string)
             removeErrorToolbarItem()
             return
         }
@@ -463,6 +488,8 @@ final class MainWindowController: NSWindowController {
         window?.title = "FlashTeX"
         editor.updateGutter()
         highlighter.rehighlightNow(editor: editor, scrollView: scrollView)
+        proximity.reset()
+        preview.removePatches()
         compiler.resetIncrementalState()
         compiler.compileNow(source: editor.string)
     }
@@ -486,6 +513,8 @@ final class MainWindowController: NSWindowController {
             window?.title = url.lastPathComponent
             editor.updateGutter()
             highlighter.rehighlightNow(editor: editor, scrollView: scrollView)
+            proximity.reset()
+            preview.removePatches()
             compiler.resetIncrementalState()
             compiler.compileNow(source: editor.string)
         } catch {

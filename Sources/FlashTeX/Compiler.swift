@@ -114,6 +114,13 @@ final class Compiler {
         if let proc, proc.isRunning { proc.terminate() }
     }
 
+    /// Drop a pending (debounced) compile without starting one. An in-flight
+    /// run is left alone. Used when a proximity render supersedes the full
+    /// compile for a locally-contained edit.
+    func cancelScheduledCompile() {
+        debounce?.invalidate()
+    }
+
     func shutdown() {
         debounce?.invalidate()
         lock.lock()

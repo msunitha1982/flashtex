@@ -17,6 +17,10 @@ final class PreviewView: NSView {
     private var keepPage = 0
     private var keepPointInPage = CGPoint.zero
 
+    /// Annotations the proximity renderer has stamped over stale regions of the
+    /// current document. Cleared when the document is replaced.
+    private var patchAnnotations: [PDFAnnotation] = []
+
     /// Horizontal inset between the page and the pane edge.
     private let pageInset: CGFloat = 20
 
@@ -72,6 +76,9 @@ final class PreviewView: NSView {
 
     func load(pdfURL: URL) {
         guard let doc = PDFDocument(url: pdfURL) else { return }
+        // A fresh full compile supersedes any proximity patches: the old
+        // document (and its annotations) is replaced wholesale.
+        patchAnnotations.removeAll()
         // Remember where the reader was: page index + the exact point on that
         // page (in page space), so a compile that reflows the document lands
         // them back on the same page/spot instead of page one.
@@ -91,6 +98,41 @@ final class PreviewView: NSView {
 
     func clear() {
         pdfView.document = nil
+        patchAnnotations.removeAll()
+    }
+
+    // MARK: - Proximity patching
+
+    var document: PDFDocument? { pdfView.document }
+
+    /// Overlay the freshly rendered image onto `bounds` on `page` (0-based).
+    /// A paper-white square first hides the stale equation; the image — aspect
+    /// fitted into the old region — is drawn on top, so it floats at roughly
+    /// the same place and size as before.
+    func applyPatch(page: Int, bounds: CGRect, image: NSImage) {
+        removePatches()
+        guard let doc = pdfView.document,
+              page >= 0, page < doc.pageCount,
+              let pdfPage = doc.page(at: page),
+              bounds.width > 0, bounds.height > 0 else { return }
+
+        let annotation = PatchAnnotation(bounds: bounds, image: image)
+        pdfPage.addAnnotation(annotation)
+        patchAnnotations.append(annotation)
+    }
+
+    /// Remove every proximity patch from the current document.
+    func removePatches() {
+        guard let doc = pdfView.document else {
+            patchAnnotations.removeAll()
+            return
+        }
+        for annotation in patchAnnotations {
+            for page in 0..<doc.pageCount {
+                doc.page(at: page)?.removeAnnotation(annotation)
+            }
+        }
+        patchAnnotations.removeAll()
     }
 
     /// Fit the current page's width to the pane, clamped to sane bounds.
@@ -118,5 +160,40 @@ final class PreviewView: NSView {
     private func currentPageIndex() -> Int {
         guard let doc = pdfView.document, let page = pdfView.currentPage else { return 0 }
         return doc.index(for: page)
+    }
+}
+
+/// Draws a paper-white square plus the freshly rendered equation image over the
+/// stale region of a preview page. PDFKit invokes `draw(with:in:)` for custom
+/// annotation subclasses; the mask and image are combined here so they move as
+/// one annotation.
+private final class PatchAnnotation: PDFAnnotation {
+    let image: NSImage
+
+    init(bounds: CGRect, image: NSImage) {
+        self.image = image
+        super.init(bounds: bounds, forType: .square, withProperties: nil)
+        shouldDisplay = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func draw(with box: PDFDisplayBox, in context: CGContext) {
+        context.saveGState()
+        context.setFillColor(NSColor.white.cgColor)
+        context.fill(bounds)
+
+        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            context.restoreGState()
+            return
+        }
+        // The annotation context is in page space (origin bottom-left, y up);
+        // flip vertically so the raster, whose rows run top-to-bottom, isn't
+        // drawn upside down.
+        context.translateBy(x: bounds.minX, y: bounds.maxY)
+        context.scaleBy(x: 1, y: -1)
+        context.draw(cg, in: CGRect(x: 0, y: 0,
+                                    width: bounds.width, height: bounds.height))
+        context.restoreGState()
     }
 }
