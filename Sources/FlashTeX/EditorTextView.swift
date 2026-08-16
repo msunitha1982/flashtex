@@ -18,8 +18,9 @@ import FlashTeXCore
 final class EditorTextView: VimTextView {
 
     var onTextChanged: (() -> Void)?
-    var onCursorMoved: (() -> Void)?
     var onFontSizeChanged: (() -> Void)?
+    /// Fired on every Vim mode change so the host can update its status bar.
+    var onVimModeChange: (() -> Void)?
     var isLoading = false
 
     private let padding: CGFloat = 20
@@ -102,6 +103,7 @@ final class EditorTextView: VimTextView {
             }
             self.onGutterRefresh?()
             self.needsDisplay = true
+            self.onVimModeChange?()
         }
 
         settingsObserver = NotificationCenter.default.addObserver(
@@ -270,6 +272,16 @@ final class EditorTextView: VimTextView {
         let ns = string as NSString
         guard ns.length > 0 else { return 1 }
         return lineStarts().count
+    }
+
+    /// Logical (line, column) of the caret for the status bar. Column is 1-based
+    /// within the logical line, matching Vim.
+    override func caretPosition() -> (line: Int, col: Int) {
+        let ns = string as NSString
+        let loc = min(selectedRange().location, ns.length)
+        let line = lineNumber(at: loc)
+        let start = lineRange(forLine: line).location
+        return (line, loc - start + 1)
     }
 
     // MARK: - Inline Error Diagnostics
@@ -787,7 +799,6 @@ final class EditorTextView: VimTextView {
     override func setSelectedRange(_ charRange: NSRange, affinity: NSSelectionAffinity, stillSelecting: Bool) {
         super.setSelectedRange(charRange, affinity: affinity, stillSelecting: stillSelecting)
         needsDisplay = true
-        onCursorMoved?()
         // The active line number in the gutter follows the caret, so nudge the
         // gutter view to repaint as the selection moves.
         onGutterRefresh?()

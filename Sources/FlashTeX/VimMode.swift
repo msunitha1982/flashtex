@@ -73,20 +73,29 @@ final class VimController {
     private var lastFind: (VimMotion, Character)?
     private var visualAnchor = 0
     private var registers: [String: VimRegister] = [:]   // "" = unnamed register
-    private var searching = false
-    private var searchForward = true
-    private var searchQuery = ""
     private var lastSearch = ""
     private var lastSearchForward = true
+    private(set) var commandLineActive = false
+    private(set) var commandLinePrompt = ""
 
-    /// Fired whenever the mode (or search state) changes, so the host can
-    /// update the cursor, the gutter badge and dismiss autocomplete.
+    /// Fired whenever the mode changes, so the host can update the cursor, the
+    /// status bar and dismiss autocomplete.
     var onModeChange: (() -> Void)?
+    /// Fired when the user presses `:`, `/` or `?` in normal mode — the host
+    /// shows the command line (status bar) with this prompt and focuses it.
+    var onCommandLineStart: ((String) -> Void)?
+    /// Fired when the command line is dismissed (submit or cancel) so the host
+    /// can hide it and hand focus back to the editor.
+    var onCommandLineEnd: (() -> Void)?
+    /// Fired for `:` commands (e.g. "w", "q", "wq"). The host owns those
+    /// window-level operations and reports results via `showMessage`.
+    var onColonCommand: ((String) -> Void)?
+    /// Fired when a message (save report, command error…) should be shown.
+    var onMessage: ((String) -> Void)?
 
     // MARK: Derived UI state
 
     var modeLabel: String {
-        if searching { return (searchForward ? "/" : "?") + searchQuery }
         switch mode {
         case .normal: return "NORMAL"
         case .insert: return "INSERT"
@@ -127,11 +136,6 @@ final class VimController {
             return true
         }
 
-        if searching {
-            handleSearch(key: key, keyCode: keyCode, in: tv)
-            return true
-        }
-
         switch mode {
         case .insert:
             return false                // plain typing goes to NSTextView
@@ -156,12 +160,6 @@ final class VimController {
     }
 
     private func escape(_ tv: NSTextView) {
-        if searching {
-            searching = false
-            searchQuery = ""
-            modeChanged()
-            return
-        }
         switch mode {
         case .insert:
             setMode(.normal)
@@ -318,8 +316,9 @@ final class VimController {
         case "r": pendingR = true
         case "R": setMode(.replace)
         case "g": pendingG = true
-        case "/": startSearch(tv, forward: true)
-        case "?": startSearch(tv, forward: false)
+        case ":": beginCommandLine(prompt: ":")
+        case "/": beginCommandLine(prompt: "/")
+        case "?": beginCommandLine(prompt: "?")
         case "n": repeatSearch(tv, forward: lastSearchForward)
         case "N": repeatSearch(tv, forward: !lastSearchForward)
         case ";":
@@ -735,29 +734,40 @@ final class VimController {
         }
     }
 
-    // MARK: - Search (/ ? n N)
+    // MARK: - Command line (:, /, ?)
 
-    private func startSearch(_ tv: NSTextView, forward: Bool) {
-        searchForward = forward
-        searchQuery = ""
-        searching = true
-        modeChanged()
+    /// `:` (colon commands), `/` (forward search) and `?` (backward search) all
+    /// open the same command line — a text field in the status bar. The host
+    /// shows and focuses it; submit/cancel come back here.
+    func beginCommandLine(prompt: String) {
+        commandLineActive = true
+        commandLinePrompt = prompt
+        onCommandLineStart?(prompt)
     }
 
-    private func handleSearch(key: String, keyCode: Int, in tv: NSTextView) {
-        switch keyCode {
-        case 51:                                    // backspace
-            if !searchQuery.isEmpty { searchQuery.removeLast() }
-        case 36, 76:                                // return/enter → run
-            searching = false
-            lastSearch = searchQuery
-            lastSearchForward = searchForward
-            runSearch(tv, query: searchQuery, forward: searchForward)
-            searchQuery = ""
-        default:
-            if key.count == 1 { searchQuery += key }
+    func cancelCommandLine() {
+        commandLineActive = false
+        commandLinePrompt = ""
+        onCommandLineEnd?()
+    }
+
+    func submitCommandLine(_ text: String, in tv: NSTextView) {
+        let wasPrompt = commandLinePrompt
+        commandLineActive = false
+        commandLinePrompt = ""
+        onCommandLineEnd?()
+        if wasPrompt == ":" {
+            onColonCommand?(text)
+        } else {
+            lastSearch = text
+            lastSearchForward = (wasPrompt == "/")
+            runSearch(tv, query: text, forward: lastSearchForward)
         }
-        modeChanged()
+    }
+
+    /// Surface a transient status message (save report, command error…).
+    func showMessage(_ text: String) {
+        onMessage?(text)
     }
 
     private func runSearch(_ tv: NSTextView, query: String, forward: Bool) {
@@ -967,6 +977,43 @@ class VimTextView: NSTextView {
 
     let vim = VimController()
 
+    private var autoInsertOnFocus = true
+
+    /// Fired when the caret moves, so a host status bar can track Ln/Col.
+    var onCursorMoved: (() -> Void)?
+
+    override func setSelectedRange(_ charRange: NSRange,
+                                   affinity: NSSelectionAffinity,
+                                   stillSelecting: Bool) {
+        super.setSelectedRange(charRange, affinity: affinity, stillSelecting: stillSelecting)
+        onCursorMoved?()
+    }
+
+    /// Logical (line, column) of the caret for the status bar. Column is
+    /// 1-based within the logical line, matching Vim.
+    func caretPosition() -> (line: Int, col: Int) {
+        let ns = string as NSString
+        let loc = min(selectedRange().location, ns.length)
+        var line = 1
+        var index = 0
+        while index < loc {
+            let lineEnd = ns.range(of: "\n", options: [],
+                                   range: NSRange(location: index, length: ns.length - index))
+            if lineEnd.location == NSNotFound || lineEnd.location >= loc { break }
+            index = lineEnd.location + 1
+            line += 1
+        }
+        return (line, loc - index + 1)
+    }
+
+    /// Refocus the editor without the auto-insert behaviour, so after a `:w` or
+    /// a search the caret returns to Normal mode (not Insert).
+    func focusWithoutInsert() {
+        autoInsertOnFocus = false
+        _ = window?.makeFirstResponder(self)
+        autoInsertOnFocus = true
+    }
+
     override func keyDown(with event: NSEvent) {
         if SettingsStore.shared.vimMode, vim.handle(event, in: self) {
             needsDisplay = true        // mode badge in the gutter updates
@@ -977,8 +1024,10 @@ class VimTextView: NSTextView {
 
     override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
+        // Clicking back into the editor while a command line is up cancels it.
+        if vim.commandLineActive { vim.cancelCommandLine() }
         // Start in insert mode so typing immediately works on focus.
-        if SettingsStore.shared.vimMode { vim.enterInsert() }
+        if SettingsStore.shared.vimMode, autoInsertOnFocus { vim.enterInsert() }
         return ok
     }
 }

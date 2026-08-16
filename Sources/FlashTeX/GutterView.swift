@@ -113,17 +113,5 @@ final class GutterView: NSView {
             let y = rect.minY + baselineDiff + lineCenterOffset
             (text as NSString).draw(at: NSPoint(x: x, y: y), withAttributes: attrs)
         }
-
-        // Vim mode indicator pinned to the bottom corner of the gutter.
-        if SettingsStore.shared.vimMode {
-            let badgeAttrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .bold),
-                .foregroundColor: Theme.accent,
-            ]
-            let text = editor.vim.modeLabel as NSString
-            let size = text.size(withAttributes: badgeAttrs)
-            text.draw(at: NSPoint(x: 6, y: bounds.maxY - size.height - 6),
-                      withAttributes: badgeAttrs)
-        }
     }
 }

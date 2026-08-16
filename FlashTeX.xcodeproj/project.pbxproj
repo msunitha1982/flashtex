@@ -35,6 +35,7 @@
 		BB000000000000000000001A /* CompletionPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001C /* CompletionPanel.swift */; };
 		BB000000000000000000001B /* CompletionRanker.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001D /* CompletionRanker.swift */; };
 		BB000000000000000000001C /* CompletionUsageTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001E /* CompletionUsageTracker.swift */; };
+		BB000000000000000000001D /* StatusBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001F /* StatusBarView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -68,6 +69,7 @@
 		AA000000000000000000001C /* CompletionPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompletionPanel.swift; sourceTree = "<group>"; };
 		AA000000000000000000001D /* CompletionRanker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompletionRanker.swift; sourceTree = "<group>"; };
 		AA000000000000000000001E /* CompletionUsageTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompletionUsageTracker.swift; sourceTree = "<group>"; };
+		AA000000000000000000001F /* StatusBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -120,6 +122,7 @@
 				AA000000000000000000001A /* LatexStructure.swift */,
 				AA000000000000000000001B /* LaTeXCompletion.swift */,
 				AA000000000000000000001C /* CompletionPanel.swift */,
+				AA000000000000000000001F /* StatusBarView.swift */,
 			);
 			path = Sources/FlashTeX;
 			sourceTree = "<group>";
@@ -240,6 +243,7 @@
 				BB000000000000000000001A /* CompletionPanel.swift in Sources */,
 				BB000000000000000000001B /* CompletionRanker.swift in Sources */,
 				BB000000000000000000001C /* CompletionUsageTracker.swift in Sources */,
+				BB000000000000000000001D /* StatusBarView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
