@@ -1,4 +1,7 @@
 import AppKit
+#if canImport(FlashTeXCore)
+import FlashTeXCore
+#endif
 
 // AppDelegate — application lifecycle and the native menu bar.
 
@@ -80,6 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         controller?.shutdown()
+        CompletionUsageTracker.shared.flush()
         if let settingsObserver {
             NotificationCenter.default.removeObserver(settingsObserver)
         }
@@ -122,6 +126,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item("Save", "s", #selector(MainWindowController.saveDocument), .command),
             item("Save As…", "S", #selector(MainWindowController.saveDocumentAs), .command),
             item("Export PDF…", "E", #selector(MainWindowController.exportPDF), .cmdShift),
+            item("Export PNG…", "", #selector(MainWindowController.exportPNG)),
+            item("Export SVG…", "", #selector(MainWindowController.exportSVG)),
             .separator(),
             item("Open PDF in Preview", "", #selector(MainWindowController.openPdfInPreview)),
             item("Reveal PDF in Finder", "", #selector(MainWindowController.revealPdfInFinder)),
@@ -143,6 +149,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let cmdPalette = NSMenuItem(title: "Command Palette / Symbol Search…", action: #selector(MainWindowController.showCommandPalette(_:)), keyEquivalent: "P")
         cmdPalette.keyEquivalentModifierMask = [.command, .shift]
         editMenu.addItem(cmdPalette)
+
+        editMenu.addItem(.separator())
+
+        editMenu.addItem(NSMenuItem(title: "Reset Completion Learning…",
+                                    action: #selector(MainWindowController.resetCompletionLearning(_:)),
+                                    keyEquivalent: ""))
 
         editMenu.addItem(.separator())
 

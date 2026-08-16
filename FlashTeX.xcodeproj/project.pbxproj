@@ -33,6 +33,8 @@
 		BB0000000000000000000018 /* LatexStructure.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001A /* LatexStructure.swift */; };
 		BB0000000000000000000019 /* LaTeXCompletion.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001B /* LaTeXCompletion.swift */; };
 		BB000000000000000000001A /* CompletionPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001C /* CompletionPanel.swift */; };
+		BB000000000000000000001B /* CompletionRanker.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001D /* CompletionRanker.swift */; };
+		BB000000000000000000001C /* CompletionUsageTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001E /* CompletionUsageTracker.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -64,6 +66,8 @@
 		AA000000000000000000001A /* LatexStructure.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LatexStructure.swift; sourceTree = "<group>"; };
 		AA000000000000000000001B /* LaTeXCompletion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaTeXCompletion.swift; sourceTree = "<group>"; };
 		AA000000000000000000001C /* CompletionPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompletionPanel.swift; sourceTree = "<group>"; };
+		AA000000000000000000001D /* CompletionRanker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompletionRanker.swift; sourceTree = "<group>"; };
+		AA000000000000000000001E /* CompletionUsageTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompletionUsageTracker.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -81,6 +85,7 @@
 			isa = PBXGroup;
 			children = (
 				DD0000000000000000000002 /* FlashTeX */,
+				DD0000000000000000000005 /* FlashTeXCore */,
 				DD0000000000000000000004 /* Resources */,
 				AA0000000000000000000014 /* Info.plist */,
 				DD0000000000000000000003 /* Products */,
@@ -117,6 +122,15 @@
 				AA000000000000000000001C /* CompletionPanel.swift */,
 			);
 			path = Sources/FlashTeX;
+			sourceTree = "<group>";
+		};
+		DD0000000000000000000005 /* FlashTeXCore */ = {
+			isa = PBXGroup;
+			children = (
+				AA000000000000000000001D /* CompletionRanker.swift */,
+				AA000000000000000000001E /* CompletionUsageTracker.swift */,
+			);
+			path = Sources/FlashTeXCore;
 			sourceTree = "<group>";
 		};
 		DD0000000000000000000003 /* Products */ = {
@@ -224,6 +238,8 @@
 				BB0000000000000000000018 /* LatexStructure.swift in Sources */,
 				BB0000000000000000000019 /* LaTeXCompletion.swift in Sources */,
 				BB000000000000000000001A /* CompletionPanel.swift in Sources */,
+				BB000000000000000000001B /* CompletionRanker.swift in Sources */,
+				BB000000000000000000001C /* CompletionUsageTracker.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -41,10 +41,10 @@ final class CompletionPanel: NSWindow, NSTableViewDataSource, NSTableViewDelegat
         let highlight: String
     }
 
-    private static let rowHeight: CGFloat = 26
+    private static let rowHeight: CGFloat = 24
     private static let maxVisibleRows = 8
-    static let textPadding: CGFloat = 12
-    private static let verticalInset: CGFloat = 4
+    static let textPadding: CGFloat = 10
+    private static let verticalInset: CGFloat = 3
 
     private let scrollView = NSScrollView()
     private let tableView = NSTableView()
@@ -286,7 +286,7 @@ final class CompletionPanel: NSWindow, NSTableViewDataSource, NSTableViewDelegat
             let str = (item.command + "  " + item.preview) as NSString
             maxW = max(maxW, str.size(withAttributes: [.font: font]).width)
         }
-        let width = min(max(maxW + Self.textPadding * 2 + 2, 360), 520)
+        let width = min(max(maxW + Self.textPadding * 2 + 2, 340), 480)
         let visible = min(items.count, Self.maxVisibleRows)
         let height = CGFloat(max(visible, 1)) * Self.rowHeight + Self.verticalInset * 2
         setContentSize(NSSize(width: width, height: height))
@@ -399,7 +399,7 @@ final class CompletionCellView: NSTableCellView {
 
         if !preview.isEmpty {
             let cmdW = (command as NSString).size(withAttributes: [.font: font]).width
-            (preview as NSString).draw(at: NSPoint(x: x + cmdW + 12, y: textTop),
+            (preview as NSString).draw(at: NSPoint(x: x + cmdW + 10, y: textTop),
                                        withAttributes: [.font: font, .foregroundColor: previewColor])
         }
     }

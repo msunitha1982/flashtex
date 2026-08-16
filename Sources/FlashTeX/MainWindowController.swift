@@ -1,5 +1,9 @@
 import AppKit
 import UniformTypeIdentifiers
+import PDFKit
+#if canImport(FlashTeXCore)
+import FlashTeXCore
+#endif
 
 // MainWindowController — the app shell.
 //
@@ -551,6 +555,112 @@ final class MainWindowController: NSWindowController {
         }
     }
 
+    // MARK: - PNG / SVG export
+
+    @objc func exportPNG() {
+        exportPages(extension: "png") { [weak self] page in
+            self?.renderPagePNG(page, scale: 300.0 / 72.0)
+        }
+    }
+
+    @objc func exportSVG() {
+        exportPages(extension: "svg") { [weak self] page in
+            self?.renderPageSVG(page)
+        }
+    }
+
+    /// Shared export flow: a single-page document writes one file to the chosen
+    /// URL; a multi-page document writes `base-1.ext, base-2.ext, …` into the
+    /// chosen folder and reveals it in the Finder.
+    private func exportPages(extension ext: String, renderer: (PDFPage) -> Data?) {
+        guard let doc = preview.pdfView.document, doc.pageCount > 0 else { return }
+        let base = currentFileURL?.deletingPathExtension().lastPathComponent ?? "document"
+        let single = doc.pageCount == 1
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: ext) ?? .data]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = single ? "\(base).\(ext)" : "\(base)-pages"
+        panel.prompt = "Export"
+        guard panel.runModal() == .OK, let dest = panel.url else { return }
+
+        var written: [URL] = []
+        for i in 0..<doc.pageCount {
+            guard let page = doc.page(at: i), let data = renderer(page) else { continue }
+            let url: URL
+            if single {
+                url = dest
+            } else {
+                let dir = dest.pathExtension.isEmpty ? dest : dest.deletingPathExtension()
+                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                url = dir.appendingPathComponent("\(base)-\(i + 1).\(ext)")
+            }
+            do {
+                try data.write(to: url, options: .atomic)
+                written.append(url)
+            } catch {
+                presentError(NSError(domain: "FlashTeX", code: 10,
+                                     userInfo: [NSLocalizedDescriptionKey:
+                                        "Could not write \(url.lastPathComponent)."]))
+            }
+        }
+        if !single && !written.isEmpty {
+            NSWorkspace.shared.activateFileViewerSelecting(written)
+        }
+    }
+
+    /// Rasterize one PDF page at `scale` (72pt-based; e.g. 300/72 ≈ 417% for a
+    /// crisp print-quality PNG) into upright PNG data.
+    private func renderPagePNG(_ page: PDFPage, scale: CGFloat) -> Data? {
+        let bounds = page.bounds(for: .mediaBox)
+        let w = Int((bounds.width * scale).rounded())
+        let h = Int((bounds.height * scale).rounded())
+        guard w > 0, h > 0,
+              let rep = NSBitmapImageRep(bitmapDataPlanes: nil,
+                                         pixelsWide: w, pixelsHigh: h,
+                                         bitsPerSample: 8, samplesPerPixel: 4,
+                                         hasAlpha: true, isPlanar: false,
+                                         colorSpaceName: .deviceRGB,
+                                         bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
+        guard let ctx = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+        let cg = ctx.cgContext
+        cg.setFillColor(NSColor.white.cgColor)
+        cg.fill(CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h)))
+        // Flip into top-down page space so the saved image is upright.
+        cg.translateBy(x: 0, y: CGFloat(h))
+        cg.scaleBy(x: scale, y: -scale)
+        cg.interpolationQuality = .high
+        page.draw(with: .mediaBox, to: cg)
+        return rep.representation(using: .png, properties: [:])
+    }
+
+    /// Standalone SVG of one page: a page-sized vector canvas embedding the
+    /// page rasterized at 4× (≈288 DPI for US Letter), so it opens and scales
+    /// in any browser/SVG editor without external fonts.
+    private func renderPageSVG(_ page: PDFPage, scale: CGFloat = 4.0) -> Data? {
+        let bounds = page.bounds(for: .mediaBox)
+        guard let png = renderPagePNG(page, scale: scale) else { return nil }
+        let svg = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <svg xmlns="http://www.w3.org/2000/svg" width="\(bounds.width)pt" height="\(bounds.height)pt" viewBox="0 0 \(bounds.width) \(bounds.height)">
+        <image x="0" y="0" width="\(bounds.width)" height="\(bounds.height)" href="data:image/png;base64,\(png.base64EncodedString())"/>
+        </svg>
+        """
+        return svg.data(using: .utf8)
+    }
+
+    // MARK: - Completion personalization
+
+    @objc func resetCompletionLearning(_ sender: Any?) {
+        let alert = NSAlert()
+        alert.messageText = "Reset completion learning?"
+        alert.informativeText = "FlashTeX quietly learns which completions you pick most and orders the autocomplete list accordingly. This clears that history and restores plain alphabetical ordering."
+        alert.addButton(withTitle: "Reset")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        CompletionUsageTracker.shared.reset()
+    }
+
     private func confirmDiscardIfNeeded() -> Bool {
         guard window?.isDocumentEdited == true else { return true }
         let alert = NSAlert()
@@ -920,7 +1030,8 @@ extension MainWindowController: NSMenuItemValidation {
         case #selector(toggleToolbar(_:)):
             menuItem.state = isToolbarMinimized ? .on : .off
             return true
-        case #selector(exportPDF), #selector(revealPdfInFinder):
+        case #selector(exportPDF), #selector(exportPNG), #selector(exportSVG),
+             #selector(revealPdfInFinder):
             return lastPdfURL != nil
         case #selector(openPdfInPreview):
             return lastPdfURL != nil

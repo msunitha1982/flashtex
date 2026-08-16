@@ -1,5 +1,8 @@
 import AppKit
 import SwiftUI
+#if canImport(FlashTeXCore)
+import FlashTeXCore
+#endif
 
 // EditorTextView — the LaTeX editing surface.
 //
@@ -544,7 +547,9 @@ final class EditorTextView: VimTextView {
     }
 
     private func completionItems(forPartial partial: String) -> [CompletionPanel.Item] {
-        LaTeXCompletion.matches(partial: partial).map { command in
+        let commands = CompletionRanker.rank(LaTeXCompletion.matches(partial: partial),
+                                             prefix: partial)
+        return commands.map { command in
             CompletionPanel.Item(command: command,
                                  preview: LaTeXCompletion.preview(for: command),
                                  highlight: partial)
@@ -612,6 +617,7 @@ final class EditorTextView: VimTextView {
             dismissCompletionPanel()
             return
         }
+        let prefix = (string as NSString).substring(with: range)
         let (text, placeholders) = LaTeXCompletion.assemble(template)
         undoManager?.setActionName("Complete \(command)")
         if shouldChangeText(in: range, replacementString: text) {
@@ -625,6 +631,9 @@ final class EditorTextView: VimTextView {
             setSelectedRange(NSRange(location: range.location + (text as NSString).length,
                                      length: 0))
         }
+        // Every acceptance path (tab, return, mouse click) funnels through here,
+        // so this single call feeds the usage tracker for each of them.
+        CompletionUsageTracker.shared.recordSelection(completionID: command, prefix: prefix)
         dismissCompletionPanel()
     }
 
@@ -750,11 +759,22 @@ final class EditorTextView: VimTextView {
         invalidateLineStartsCache()
         super.didChangeText()
         updateGutter()
+        dismissErrorPopupForEditedLine()
         updatePopupVisibilityForCaret()
         refreshCompletionPanel()
         if !isLoading {
             onTextChanged?()
         }
+    }
+
+    /// Editing a line that carries a diagnostic dismisses its error popup and
+    /// marks the line dismissed, so it stays away until the error set changes
+    /// (a fresh compile with the same errors must not instantly resurrect it).
+    private func dismissErrorPopupForEditedLine() {
+        let line = lineNumber(at: selectedRange().location)
+        guard diagnostics[line] != nil else { return }
+        dismissedLines.insert(line)
+        updateInlinePopover()
     }
 
     /// Brings a hidden (blocked-by-caret) popup back once the caret leaves the

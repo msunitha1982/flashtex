@@ -12,9 +12,19 @@ let package = Package(
     name: "FlashTeX",
     platforms: [.macOS(.v12)],
     targets: [
+        .target(
+            name: "FlashTeXCore",
+            path: "Sources/FlashTeXCore"
+        ),
         .executableTarget(
             name: "FlashTeX",
+            dependencies: ["FlashTeXCore"],
             path: "Sources/FlashTeX"
-        )
+        ),
+        .testTarget(
+            name: "FlashTeXCoreTests",
+            dependencies: ["FlashTeXCore"],
+            path: "Tests/FlashTeXCoreTests"
+        ),
     ]
 )

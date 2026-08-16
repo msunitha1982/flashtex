@@ -219,6 +219,9 @@ enum LaTeXCompletion {
     }
 
     /// Split a snippet template into literal text and placeholder ranges.
+    /// Placeholder default text (e.g. `num` in `\frac{num}{den}`) is dropped,
+    /// so an accepted completion pastes `\frac{}{}` with the parameters left
+    /// empty; the editor then places the caret on the first placeholder.
     /// Returns the insertable string and the character ranges (offset within
     /// the returned string) of every placeholder.
     static func assemble(_ template: String) -> (text: String, placeholders: [NSRange]) {
@@ -231,13 +234,12 @@ enum LaTeXCompletion {
         for scalar in scalars {
             if scalar == placeholder {
                 if inPlaceholder {
-                    placeholders.append(NSRange(location: placeholderStart,
-                                                length: (text as NSString).length - placeholderStart))
+                    placeholders.append(NSRange(location: placeholderStart, length: 0))
                 } else {
                     placeholderStart = (text as NSString).length
                 }
                 inPlaceholder.toggle()
-            } else {
+            } else if !inPlaceholder {
                 text.unicodeScalars.append(scalar)
             }
         }
