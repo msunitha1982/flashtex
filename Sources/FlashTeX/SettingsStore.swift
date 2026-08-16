@@ -38,7 +38,6 @@ final class SettingsStore: ObservableObject {
         case renderDebounceMs   // 50…500
         case unfoldTrigger      // "click" | "hover" | "caret"
 
-        case vimMode
         case formatShortcuts    // [FormatAction: keyEquivalent string]
         case suppressFallbackNotice  // Bool — don't re-warn about engine fallbacks
         case showErrorPopups    // Bool — show the inline red error popovers
@@ -69,7 +68,7 @@ final class SettingsStore: ObservableObject {
             switch self {
             case .none: return "None"
             case .absolute: return "Absolute (1, 2, 3…)"
-            case .relative: return "Relative (Vim-style)"
+            case .relative: return "Relative (distance from caret)"
             }
         }
     }
@@ -157,7 +156,6 @@ final class SettingsStore: ObservableObject {
             Key.chipRadius.rawValue: 4.0,
             Key.renderDebounceMs.rawValue: 400.0,
             Key.unfoldTrigger.rawValue: UnfoldTrigger.click.rawValue,
-            Key.vimMode.rawValue: false,
             Key.formatShortcuts.rawValue: FormatAction.allCases.reduce(into: [String: String]()) { dict, action in
                 dict[action.rawValue] = action.defaultKey
             },
@@ -306,13 +304,6 @@ final class SettingsStore: ObservableObject {
     var unfoldTrigger: UnfoldTrigger {
         get { UnfoldTrigger(rawValue: string(.unfoldTrigger)) ?? .click }
         set { set(newValue.rawValue, .unfoldTrigger) }
-    }
-
-    // MARK: - Vim
-
-    var vimMode: Bool {
-        get { defaults.bool(forKey: Key.vimMode.rawValue) }
-        set { set(newValue, .vimMode) }
     }
 
     /// When a requested engine fails and compilation silently falls back to

@@ -35,12 +35,10 @@ final class MainWindowController: NSWindowController {
     private var flashController: FlashWindowController?
     private var isCompiling = false
     private var compilingDelay: Timer?
-    private var forceClose = false
 
     private weak var enginePopup: NSPopUpButton?
     private weak var autoSwitch: NSSwitch?
     private var gutterView: GutterView?
-    private var statusBar: StatusBarView?
 
     init() {
         let window = NSWindow(
@@ -130,14 +128,6 @@ final class MainWindowController: NSWindowController {
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(scrollView)
 
-        // The status bar is the editor's bottom strip: Vim mode, caret
-        // position, encoding/engine and the `:` command line / messages.
-        let statusBar = StatusBarView()
-        self.statusBar = statusBar
-        statusBar.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(statusBar)
-        wireStatusBar(statusBar)
-
         // The line-number strip is a dedicated view so its drawing is never
         // clipped by the text view's layer (see GutterView).
         gutterView = GutterView(editor: editor, scrollView: scrollView)
@@ -149,11 +139,7 @@ final class MainWindowController: NSWindowController {
             scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: container.topAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
-            statusBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            statusBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            statusBar.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            statusBar.heightAnchor.constraint(equalToConstant: 24),
+            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
 
         // Re-apply the cached highlight tokens as the editor scrolls.
@@ -237,102 +223,6 @@ final class MainWindowController: NSWindowController {
         } else {
             if window?.toolbar == nil { buildToolbar() }
         }
-    }
-
-    // MARK: - Status bar & Vim command line
-
-    private func wireStatusBar(_ statusBar: StatusBarView) {
-        let refresh = { [weak self] in
-            guard let self else { return }
-            statusBar.update(mode: self.editor.vim.modeLabel)
-            statusBar.update(position: self.editor.caretPosition(),
-                             encoding: "UTF-8",
-                             engine: self.compiler.engine)
-        }
-
-        editor.onVimModeChange = { refresh() }
-        editor.onCursorMoved = { [weak self] in
-            guard let self else { return }
-            statusBar.update(position: self.editor.caretPosition(),
-                             encoding: "UTF-8",
-                             engine: self.compiler.engine)
-        }
-        editor.vim.onCommandLineStart = { prompt in
-            statusBar.beginCommandLine(prompt: prompt)
-        }
-        editor.vim.onCommandLineEnd = { [weak self] in
-            guard let self else { return }
-            statusBar.endCommandLine()
-            self.editor.focusWithoutInsert()
-            refresh()
-        }
-        editor.vim.onColonCommand = { [weak self] command in
-            self?.executeColonCommand(command)
-        }
-        editor.vim.onMessage = { [weak self] text in
-            self?.statusBar?.showMessage(text)
-        }
-        refresh()
-    }
-
-    private func executeColonCommand(_ raw: String) {
-        let cmd = raw.trimmingCharacters(in: .whitespaces)
-        let lower = cmd.lowercased()
-
-        switch lower {
-        case "w":
-            saveWithReport()
-        case "wq", "wq!", "x":
-            if saveWithReport() { window?.performClose(nil) }
-        case "q":
-            if window?.isDocumentEdited ?? false {
-                statusBar?.showMessage("E37: No write since last change (add ! to override)")
-            } else {
-                window?.performClose(nil)
-            }
-        case "q!":
-            forceClose = true
-            window?.performClose(nil)
-        case "wa", "wall":
-            saveWithReport()
-        case "wqa", "wqall", "xa", "xall":
-            if saveWithReport() { window?.performClose(nil) }
-        case "e", "e!":
-            if lower == "e", window?.isDocumentEdited ?? false {
-                statusBar?.showMessage("E37: No write since last change (add ! to override)")
-            } else if let url = currentFileURL {
-                reloadFromDisk(url)
-            } else {
-                statusBar?.showMessage("E32: No file name")
-            }
-        case "noh", "nohlsearch":
-            statusBar?.showMessage("")
-        case "":
-            break
-        default:
-            statusBar?.showMessage("E492: Not an editor command: \(cmd)")
-        }
-    }
-
-    @discardableResult
-    private func saveWithReport() -> Bool {
-        guard saveDocument() else { return false }
-        let ns = editor.string as NSString
-        let lines = ns.length == 0 ? 0 : editor.lineCount()
-        let bytes = editor.string.utf8.count
-        let name = currentFileURL?.lastPathComponent ?? "untitled.tex"
-        statusBar?.showMessage("\"\(name)\" \(lines)L, \(bytes)B written")
-        return true
-    }
-
-    private func reloadFromDisk(_ url: URL) {
-        guard let data = try? Data(contentsOf: url) else {
-            statusBar?.showMessage("E212: Can't open file for reading")
-            return
-        }
-        editor.string = String(data: data, encoding: .utf8) ?? ""
-        window?.isDocumentEdited = false
-        statusBar?.showMessage("\"\(url.lastPathComponent)\" reloaded")
     }
 
     // MARK: - Compiler wiring
@@ -1219,11 +1109,7 @@ extension MainWindowController: NSTableViewDelegate {
 extension MainWindowController: NSWindowDelegate {
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        if forceClose {
-            forceClose = false
-            return true
-        }
-        return confirmDiscardIfNeeded()
+        confirmDiscardIfNeeded()
     }
 
     func windowWillClose(_ notification: Notification) {

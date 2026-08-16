@@ -16,7 +16,6 @@ import AppKit
 final class FlashWindowController: NSWindowController {
 
     private let editor = MathFoldingTextView.makeEditor()
-    private var statusBar: StatusBarView?
 
     init() {
         let panel = NSPanel(
@@ -57,83 +56,19 @@ final class FlashWindowController: NSWindowController {
         scroll.documentView = editor
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        let statusBar = StatusBarView()
-        self.statusBar = statusBar
-        statusBar.translatesAutoresizingMaskIntoConstraints = false
-        wireStatusBar(statusBar)
-
         let container = NSView()
         container.addSubview(scroll)
-        container.addSubview(statusBar)
         NSLayoutConstraint.activate([
             scroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: container.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
-            statusBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            statusBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            statusBar.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            statusBar.heightAnchor.constraint(equalToConstant: 24),
+            scroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
 
         container.frame = NSRect(x: 0, y: 0, width: 820, height: 640)
         window?.contentView = container
 
         editor.string = sampleSnippet
-    }
-
-    // MARK: - Status bar & Vim command line
-
-    private func wireStatusBar(_ statusBar: StatusBarView) {
-        let refresh = { [weak self] in
-            guard let self else { return }
-            statusBar.update(mode: self.editor.vim.modeLabel)
-            statusBar.update(position: self.editor.caretPosition(),
-                             encoding: "UTF-8",
-                             engine: "LaTeX")
-        }
-
-        editor.vim.onModeChange = { [weak self] in
-            self?.statusBar?.update(mode: self?.editor.vim.modeLabel ?? "NORMAL")
-        }
-        editor.onCursorMoved = { [weak self] in
-            guard let self else { return }
-            statusBar.update(position: self.editor.caretPosition(),
-                             encoding: "UTF-8",
-                             engine: "LaTeX")
-        }
-        editor.vim.onCommandLineStart = { [weak self] prompt in
-            self?.statusBar?.beginCommandLine(prompt: prompt)
-        }
-        editor.vim.onCommandLineEnd = { [weak self] in
-            guard let self else { return }
-            self.statusBar?.endCommandLine()
-            self.editor.focusWithoutInsert()
-            refresh()
-        }
-        editor.vim.onColonCommand = { [weak self] command in
-            self?.executeColonCommand(command)
-        }
-        editor.vim.onMessage = { [weak self] text in
-            self?.statusBar?.showMessage(text)
-        }
-        refresh()
-    }
-
-    private func executeColonCommand(_ raw: String) {
-        let cmd = raw.trimmingCharacters(in: .whitespaces).lowercased()
-        switch cmd {
-        case "q", "q!", "quit", "quit!":
-            window?.close()
-        case "w", "wq", "wq!", "x", "e", "e!", "wa", "wqa":
-            statusBar?.showMessage("E32: No file name")
-        case "noh", "nohlsearch":
-            statusBar?.showMessage("")
-        case "":
-            break
-        default:
-            statusBar?.showMessage("E492: Not an editor command: \(raw.trimmingCharacters(in: .whitespaces))")
-        }
     }
 
     private let sampleSnippet = """

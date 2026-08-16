@@ -20,7 +20,7 @@ import AppKit
 // (`font.pointSize / MathRenderer.renderPointSize`). Display blocks are drawn
 // centred on their paragraph.
 
-final class MathFoldingTextView: VimTextView {
+final class MathFoldingTextView: NSTextView {
 
     var foldEnabled = true {
         didSet { refreshFolds() }

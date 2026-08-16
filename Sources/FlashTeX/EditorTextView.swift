@@ -15,12 +15,10 @@ import FlashTeXCore
 // It paints its own background so the editor colour adapts to the system
 // appearance, and reports edits to the controller through callbacks.
 
-final class EditorTextView: VimTextView {
+final class EditorTextView: NSTextView {
 
     var onTextChanged: (() -> Void)?
     var onFontSizeChanged: (() -> Void)?
-    /// Fired on every Vim mode change so the host can update its status bar.
-    var onVimModeChange: (() -> Void)?
     var isLoading = false
 
     private let padding: CGFloat = 20
@@ -94,18 +92,6 @@ final class EditorTextView: VimTextView {
 
         applySettings()
 
-        vim.onModeChange = { [weak self] in
-            guard let self else { return }
-            // Leaving insert/replace: drop the autocomplete panel and refresh
-            // the caret/gutter so the block cursor and mode badge update.
-            if !self.vim.isInserting() {
-                self.dismissCompletionPanel()
-            }
-            self.onGutterRefresh?()
-            self.needsDisplay = true
-            self.onVimModeChange?()
-        }
-
         settingsObserver = NotificationCenter.default.addObserver(
             forName: SettingsStore.changedNotification,
             object: nil, queue: .main) { [weak self] _ in
@@ -150,30 +136,6 @@ final class EditorTextView: VimTextView {
     //  layer-backed, so content outside a redraw's dirty rect is discarded,
     //  and typing/scroll/caret redraws only dirty the text column.
     // =====================================================================
-
-    /// Normal and replace modes render a block cursor over the caret character
-    /// instead of the native blinking caret. Insert mode keeps the native caret.
-    override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn: Bool) {
-        if SettingsStore.shared.vimMode, vim.usesBlockCursor {
-            guard let lm = layoutManager, let tc = textContainer else { return }
-            let caret = selectedRange().location
-            let ns = string as NSString
-            var block = NSRect(x: rect.minX, y: rect.minY, width: 2, height: rect.height)
-            if caret < ns.length {
-                let glyphRange = lm.glyphRange(forCharacterRange: NSRange(location: caret, length: 1),
-                                               actualCharacterRange: nil)
-                if glyphRange.location != NSNotFound {
-                    let bbox = lm.boundingRect(forGlyphRange: glyphRange, in: tc)
-                        .offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
-                    block.size.width = max(bbox.width, 2)
-                }
-            }
-            Theme.accent.setFill()
-            NSBezierPath(roundedRect: block, xRadius: 1.5, yRadius: 1.5).fill()
-            return
-        }
-        super.drawInsertionPoint(in: rect, color: color, turnedOn: turnedOn)
-    }
 
     override func draw(_ dirtyRect: NSRect) {
         Theme.editorBackground.setFill()
@@ -272,16 +234,6 @@ final class EditorTextView: VimTextView {
         let ns = string as NSString
         guard ns.length > 0 else { return 1 }
         return lineStarts().count
-    }
-
-    /// Logical (line, column) of the caret for the status bar. Column is 1-based
-    /// within the logical line, matching Vim.
-    override func caretPosition() -> (line: Int, col: Int) {
-        let ns = string as NSString
-        let loc = min(selectedRange().location, ns.length)
-        let line = lineNumber(at: loc)
-        let start = lineRange(forLine: line).location
-        return (line, loc - start + 1)
     }
 
     // MARK: - Inline Error Diagnostics
@@ -685,12 +637,6 @@ final class EditorTextView: VimTextView {
     }
 
     override func keyDown(with event: NSEvent) {
-        // The Vim router sits before the autocomplete trigger: in normal mode
-        // every key is a Vim command (e.g. `f` = find, never autocomplete); in
-        // insert mode it defers to AppKit text input below.
-        if SettingsStore.shared.vimMode, vim.handle(event, in: self) {
-            return
-        }
         if let panel = completionPanel, panel.isVisible {
             switch Int(event.keyCode) {
             case 125:                       // ↓
