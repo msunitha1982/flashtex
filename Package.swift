@@ -26,5 +26,10 @@ let package = Package(
             dependencies: ["FlashTeXCore"],
             path: "Tests/FlashTeXCoreTests"
         ),
+        .testTarget(
+            name: "FlashTeXCompilerTests",
+            dependencies: ["FlashTeX"],
+            path: "Tests/FlashTeXCompilerTests"
+        ),
     ]
 )

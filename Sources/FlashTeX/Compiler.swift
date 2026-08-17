@@ -202,7 +202,7 @@ final class Compiler {
         // Live-preview compiles get preview-only preamble overrides (applied
         // in memory; the user's source file is never touched). Manual compiles
         // render the true document layout.
-        let source = livePreview ? injectLivePreviewOverrides(into: source) : source
+        let source = Self.preparedSource(source, livePreview: livePreview)
         var engineTimedOut = false
 
         // Every compile runs in a brand-new directory so no auxiliary state
@@ -751,10 +751,15 @@ final class Compiler {
     /// jumping around" when floats get shuffled to page tops/bottoms, so in
     /// live-preview compiles figures and tables are pinned in place where the
     /// source puts them. Manual compiles skip this and render the true layout.
-    private func injectLivePreviewOverrides(into source: String) -> String {
-        guard source.contains("\\begin{figure}") || source.contains("\\begin{table}") else {
-            return source
-        }
+    /// The source written into a temporary compilation workspace. Canonical
+    /// compiles deliberately return the user's source byte-for-byte unchanged.
+    static func preparedSource(_ source: String, livePreview: Bool) -> String {
+        livePreview ? injectLivePreviewOverrides(into: source) : source
+    }
+
+    private static func injectLivePreviewOverrides(into source: String) -> String {
+        let rewritten = LivePreviewFloatTransformer.pinSupportedFloats(in: source)
+        guard rewritten != source else { return source }
         let floatLoaded = try! NSRegularExpression(
             pattern: #"\\usepackage(\[[^\]]*\])?\{float\}"#)
             .firstMatch(in: source, range: NSRange(location: 0,
@@ -764,14 +769,14 @@ final class Compiler {
             overrides += "\\usepackage{float}\n"
         }
         overrides += "\\floatplacement{figure}{H}\n\\floatplacement{table}{H}\n"
-        guard let beginDocument = source.range(of: "\\begin{document}") else {
+        guard let beginDocument = rewritten.range(of: "\\begin{document}") else {
             return source   // malformed preamble — let the engine report it
         }
         let block = "% --- FlashTeX live-preview overrides ---\n"
                  + overrides
                  + "% --- end ---\n"
-        return source.replacingCharacters(in: beginDocument,
-                                          with: block + "\\begin{document}")
+        return rewritten.replacingCharacters(in: beginDocument,
+                                             with: block + "\\begin{document}")
     }
 
     /// True when the source asks the engine to execute external commands, in
@@ -994,6 +999,135 @@ final class Compiler {
         }
         flush()
         return issues
+    }
+}
+
+/// Rewrites only supported float opening tokens in the in-memory live-preview
+/// source. It deliberately leaves comments and verbatim-style environments
+/// untouched, so a literal `\\begin{figure}[h]` in prose or code cannot change
+/// the document that TeX sees.
+enum LivePreviewFloatTransformer {
+
+    private static let supportedFloats: Set<String> = ["figure", "figure*", "table", "table*"]
+    private static let verbatimEnvironments: Set<String> = [
+        "verbatim", "Verbatim", "lstlisting", "minted", "comment",
+    ]
+
+    static func pinSupportedFloats(in source: String) -> String {
+        var result = ""
+        var index = source.startIndex
+        var verbatimEnd: String?
+
+        while index < source.endIndex {
+            if let end = verbatimEnd {
+                if source[index...].hasPrefix("\\end{\(end)}") {
+                    let tokenEnd = source.index(index, offsetBy: "\\end{\(end)}".count)
+                    result += String(source[index..<tokenEnd])
+                    index = tokenEnd
+                    verbatimEnd = nil
+                } else {
+                    result.append(source[index])
+                    index = source.index(after: index)
+                }
+                continue
+            }
+
+            if source[index] == "%", !isEscaped(source, at: index) {
+                let lineEnd = source[index...].firstIndex(of: "\n") ?? source.endIndex
+                result += String(source[index..<lineEnd])
+                index = lineEnd
+                continue
+            }
+
+            guard source[index...].hasPrefix("\\begin") else {
+                result.append(source[index])
+                index = source.index(after: index)
+                continue
+            }
+
+            guard let begin = parseBegin(in: source, at: index) else {
+                result.append(source[index])
+                index = source.index(after: index)
+                continue
+            }
+
+            if verbatimEnvironments.contains(begin.environment) {
+                verbatimEnd = begin.environment
+                result += String(source[index..<begin.end])
+                index = begin.end
+                continue
+            }
+
+            guard supportedFloats.contains(begin.environment) else {
+                result += String(source[index..<begin.end])
+                index = begin.end
+                continue
+            }
+
+            result += String(source[index..<begin.end])
+            var cursor = begin.end
+            let triviaStart = cursor
+            while cursor < source.endIndex {
+                if source[cursor].isWhitespace {
+                    cursor = source.index(after: cursor)
+                } else if source[cursor] == "%", !isEscaped(source, at: cursor) {
+                    cursor = source[cursor...].firstIndex(of: "\n") ?? source.endIndex
+                } else {
+                    break
+                }
+            }
+            if cursor < source.endIndex, source[cursor] == "[",
+               let optionalEnd = matchingBracket(in: source, from: cursor) {
+                result += String(source[triviaStart..<cursor])
+                result += "[H]"
+                index = optionalEnd
+            } else {
+                result += "[H]"
+                index = begin.end
+            }
+        }
+        return result
+    }
+
+    private static func parseBegin(in source: String, at start: String.Index)
+        -> (environment: String, end: String.Index)? {
+        let commandEnd = source.index(start, offsetBy: "\\begin".count)
+        var cursor = commandEnd
+        while cursor < source.endIndex, source[cursor].isWhitespace {
+            cursor = source.index(after: cursor)
+        }
+        guard cursor < source.endIndex, source[cursor] == "{" else { return nil }
+        let nameStart = source.index(after: cursor)
+        guard let close = source[nameStart...].firstIndex(of: "}") else { return nil }
+        let environment = String(source[nameStart..<close])
+        return (environment, source.index(after: close))
+    }
+
+    private static func matchingBracket(in source: String, from start: String.Index) -> String.Index? {
+        var depth = 0
+        var cursor = start
+        while cursor < source.endIndex {
+            let character = source[cursor]
+            if character == "[" { depth += 1 }
+            if character == "]" {
+                depth -= 1
+                if depth == 0 { return source.index(after: cursor) }
+            }
+            cursor = source.index(after: cursor)
+        }
+        return nil
+    }
+
+    private static func isEscaped(_ source: String, at index: String.Index) -> Bool {
+        var count = 0
+        var cursor = index
+        while cursor > source.startIndex {
+            let previous = source.index(before: cursor)
+            guard source[previous] == "\\" else { break }
+            count += 1
+            cursor = previous
+        }
+        return count % 2 == 1
     }
 }
 
