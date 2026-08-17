@@ -15,7 +15,6 @@ final class PreviewView: NSView {
     private var pageObserver: NSObjectProtocol?
     private var settingsObserver: NSObjectProtocol?
     private var keepPage = 0
-    private var keepPointInPage = CGPoint.zero
 
     /// Annotations the proximity renderer has stamped over stale regions of the
     /// current document. Cleared when the document is replaced.
@@ -79,11 +78,11 @@ final class PreviewView: NSView {
         // A fresh full compile supersedes any proximity patches: the old
         // document (and its annotations) is replaced wholesale.
         patchAnnotations.removeAll()
-        // Remember where the reader was: page index + the exact point on that
-        // page (in page space), so a compile that reflows the document lands
-        // them back on the same page/spot instead of page one.
+        // Remember which page the reader was on. A PDF page's exact point does
+        // NOT survive a reflow — the old page-space coordinate lands somewhere
+        // visually unrelated once figures/lines shift — so only the page index
+        // is carried over, and the new document is shown from its natural top.
         keepPage = currentPageIndex()
-        keepPointInPage = pdfView.currentDestination?.point ?? .zero
         pdfView.document = doc
         rescaleToFit()
         // `go(to:)` right after swapping the document doesn't stick (PDFKit
@@ -91,8 +90,7 @@ final class PreviewView: NSView {
         // navigate on the next run-loop turn.
         guard keepPage < doc.pageCount, let page = doc.page(at: keepPage) else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.pdfView.go(to: PDFDestination(page: page, at: self.keepPointInPage))
+            self?.pdfView.go(to: page)
         }
     }
 

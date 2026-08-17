@@ -3,7 +3,9 @@ import Foundation
 // Compiler — background compilation engine.
 //
 // * 400 ms debounce (Timer) so live rendering only happens after a pause.
-// * Each compile runs in a unique temp directory (document.tex → document.pdf).
+// * Every compile runs in a brand-new temp directory (document.tex →
+//   document.pdf), so no .aux/.toc/.out or generated figure file from an
+//   earlier render can leak into the next one.
 // * A new request kills any in-flight engine run immediately (generation
 //   counter discards stale callbacks).
 // * Every engine run gets `-shell-escape` plus a synthesized PATH (TeX/Brew
@@ -13,7 +15,9 @@ import Foundation
 //   pdflatex → [asy on any .asy files] → pdflatex → pdflatex. Asymptote
 //   environments are compiled through the `asy` binary when present, and any
 //   pass that materialises .asy assets or shell-escapes to `asy` triggers the
-//   extra pdflatex pass needed to embed the figures.
+//   extra pdflatex pass needed to embed the figures. A failing `asy` run
+//   aborts the pipeline with a clear message instead of silently producing a
+//   document with missing figures.
 // * stdout/stderr are captured through pipes (never block the terminal), so a
 //   failing engine leaves a trail we can surface in the report.
 // * The previous build directory is kept alive until the next successful
@@ -55,10 +59,6 @@ final class Compiler {
     private var currentProcess: Process?
     private var lastBuildDir: URL?
     private let generation = AtomicInt(0)
-    /// Build dir reused across compiles so TeX's .aux/.toc/.out survive between
-    /// runs — that's what makes the reference/TOC passes incremental instead
-    /// of re-deriving everything from scratch each time.
-    private var persistentBuildDir: URL?
     /// The source of the most recent request — consulted at pass time to
     /// decide whether `-shell-escape` should be granted.
     private var currentSource: String?
@@ -127,22 +127,18 @@ final class Compiler {
         lock.lock()
         let proc = currentProcess
         currentProcess = nil
-        let dirs = Set<URL?>([lastBuildDir, persistentBuildDir])
+        let dir = lastBuildDir
         lastBuildDir = nil
-        persistentBuildDir = nil
         lock.unlock()
         if let proc, proc.isRunning { proc.terminate() }
-        for case let dir? in dirs {
-            try? FileManager.default.removeItem(at: dir)
-        }
+        if let dir { try? FileManager.default.removeItem(at: dir) }
     }
 
-    /// Drop the incremental state when the document is replaced (new/open), so
-    /// stale reference data from a previous document can never leak in.
+    /// Drop the previous build directory when the document is replaced
+    /// (new/open), so a stale PDF can never be mistaken for the new document's.
     func resetIncrementalState() {
         lock.lock()
-        let dir = persistentBuildDir
-        persistentBuildDir = nil
+        let dir = lastBuildDir
         lastBuildDir = nil
         lock.unlock()
         if let dir { try? FileManager.default.removeItem(at: dir) }
@@ -209,17 +205,12 @@ final class Compiler {
         let source = livePreview ? injectLivePreviewOverrides(into: source) : source
         var engineTimedOut = false
 
-        // Reuse the persistent build dir when one exists so TeX's reference
-        // files (.aux/.toc/.out) carry over between compiles — incremental
-        // compilation. It is only (re)created on the first run or after the
-        // document changes.
-        let buildDir: URL
-        if let existing = persistentBuildDir {
-            buildDir = existing
-        } else if let fresh = makeBuildDir() {
-            persistentBuildDir = fresh
-            buildDir = fresh
-        } else {
+        // Every compile runs in a brand-new directory so no auxiliary state
+        // (.aux/.toc/.out, generated figure files, shell-escaped output) can
+        // leak from an earlier render and silently corrupt the new one. The
+        // multi-pass pipeline below still settles references within this one
+        // clean directory.
+        guard let buildDir = makeBuildDir() else {
             deliverFailure("Could not create a temporary workspace.", gen: gen)
             return nil
         }
@@ -230,7 +221,6 @@ final class Compiler {
         } catch {
             deliverFailure("Could not write the temporary document: \(error.localizedDescription)", gen: gen)
             cleanup(buildDir)
-            persistentBuildDir = nil
             return nil
         }
 
@@ -270,7 +260,11 @@ final class Compiler {
                                        firstRun: firstRunForEngine)
             engineTimedOut = engineTimedOut || pass.timedOut
             if pass.ok && asyCount > 0 {
-                runAsymptoteIfNeeded(buildDir: buildDir)
+                let asyFailures = runAsymptoteIfNeeded(buildDir: buildDir)
+                if !asyFailures.isEmpty {
+                    let elapsedMs = Int64(Date().timeIntervalSince(start) * 1000)
+                    return asymptoteFailureReport(asyFailures, gen: gen, elapsedMs: elapsedMs)
+                }
                 pass = runTectonicPass(engineURL: engineURL, buildDir: buildDir,
                                        extraArgs: searchPathArgs,
                                        firstRun: firstRunForEngine)
@@ -329,18 +323,30 @@ final class Compiler {
         var ok: Bool
         var engineOutput = ""
         if needsMultiplePasses {
-            // Pass 1 (draft mode skips the PDF — faster). `-shell-escape` lets
-            // TeX itself invoke `asy` for \begin{asy} blocks, writing the
-            // figure PDFs into this build dir.
+            // Pass 1 usually runs in draft mode (skips writing the PDF —
+            // faster). Asymptote documents are the exception: the figure PDFs
+            // TeX embeds must actually exist during the run, and a draft pass
+            // can mask a missing-figure failure with a success-looking log, so
+            // those render pass 1 for real.
+            let draftPass1 = !source.contains("\\begin{asy}")
             let pass1 = runSinglePass(engineURL: engineURL, buildDir: buildDir,
-                                      draftMode: true, memoryOverride: memoryOverride,
+                                      draftMode: draftPass1, memoryOverride: memoryOverride,
                                       firstRun: firstRunForEngine)
             ok = pass1.ok
             engineTimedOut = engineTimedOut || pass1.timedOut
             engineOutput = pass1.output
             // Explicit fallback: run `asy` ourselves so restricted shell-escape
             // configurations still work (all .asy files processed in parallel).
-            if ok { runAsymptoteIfNeeded(buildDir: buildDir) }
+            // A failing `asy` run is fatal — the figure PDFs it should have
+            // produced don't exist, and continuing would only produce a
+            // document full of missing figures.
+            if ok {
+                let asyFailures = runAsymptoteIfNeeded(buildDir: buildDir)
+                if !asyFailures.isEmpty {
+                    let elapsedMs = Int64(Date().timeIntervalSince(start) * 1000)
+                    return asymptoteFailureReport(asyFailures, gen: gen, elapsedMs: elapsedMs)
+                }
+            }
             let refsAfter1 = referenceHash(buildDir)
             // Pass 2 writes the final PDF; a third pass only runs if references
             // moved (or an asy figure first appeared in this pass).
@@ -597,15 +603,19 @@ final class Compiler {
 
     /// Compile every `*.asy` file in the build dir with the `asy` binary, if
     /// both exist. Asymptote needs this extra pass before pdflatex can embed
-    /// the generated figures; files are processed in parallel.
-    private func runAsymptoteIfNeeded(buildDir: URL) {
+    /// the generated figures; files are processed in parallel. Returns the
+    /// names of any files whose `asy` run failed (non-zero exit), so the
+    /// caller can abort the pipeline instead of embedding missing figures.
+    private func runAsymptoteIfNeeded(buildDir: URL) -> [String] {
         let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(atPath: buildDir.path) else { return }
-        let asyFiles = files.filter { $0.hasSuffix(".asy") }
-        guard !asyFiles.isEmpty, let asyURL = TeX.findExecutable("asy") else { return }
+        guard let files = try? fm.contentsOfDirectory(atPath: buildDir.path) else { return [] }
+        let asyFiles = files.filter { $0.hasSuffix(".asy") }.sorted()
+        guard !asyFiles.isEmpty, let asyURL = TeX.findExecutable("asy") else { return [] }
 
         let group = DispatchGroup()
         let queue = DispatchQueue(label: "flashtex.asy", attributes: .concurrent)
+        var failed: [String] = []
+        let failureLock = NSLock()
         for file in asyFiles {
             group.enter()
             queue.async {
@@ -617,15 +627,44 @@ final class Compiler {
                 process.arguments = [file]
                 process.standardOutput = FileHandle.nullDevice
                 process.standardError = FileHandle.nullDevice
+                let success: Bool
                 do {
                     try process.run()
                     process.waitUntilExit()
+                    success = process.terminationStatus == 0
                 } catch {
-                    // A failing asy run is surfaced through the next pdflatex pass.
+                    success = false
+                }
+                if !success {
+                    failureLock.lock()
+                    failed.append(file)
+                    failureLock.unlock()
                 }
             }
         }
         group.wait()
+        return failed
+    }
+
+    /// A failure report listing the Asymptote files whose `asy` pass failed.
+    /// The pipeline aborts here because the generated figure PDFs don't exist,
+    /// so continuing would only produce a document full of missing figures.
+    private func asymptoteFailureReport(_ files: [String], gen: Int,
+                                        elapsedMs: Int64) -> LatexReport? {
+        let names = files.joined(separator: ", ")
+        let message = "Asymptote compilation failed: \(names). The figure(s) it "
+                    + "should have produced are missing, so the document is incomplete."
+        let report = LatexReport(success: false, pdfURL: nil,
+                                 engineMessage: message,
+                                 errors: [LatexIssue(line: -1, message: message,
+                                                     context: "", hint: "")],
+                                 elapsedMs: elapsedMs, engineName: engine,
+                                 capacityError: false)
+        guard generation.load() == gen else { return nil }
+        DispatchQueue.main.async { [weak self] in
+            self?.onFinished?(report)
+        }
+        return report
     }
 
     /// True when an Asymptote pass happened during compilation: either .asy
