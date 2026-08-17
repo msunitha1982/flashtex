@@ -184,6 +184,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         compileMenu.addItem(item("Stop Compiling", ".", #selector(MainWindowController.stopCompilation(_:)), .command))
         compileMenu.addItem(item("Pause Live Compile", "", #selector(MainWindowController.toggleAutoCompile)))
         compileMenu.addItem(item("Show Errors…", "", #selector(MainWindowController.showErrorSheet)))
+        compileMenu.addItem(item("Incremental Statistics…", "", #selector(MainWindowController.showIncrementalStats)))
         compileMenu.addItem(.separator())
 
         let engineItem = NSMenuItem(title: "Engine", action: nil, keyEquivalent: "")

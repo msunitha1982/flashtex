@@ -36,6 +36,10 @@ final class MainWindowController: NSWindowController {
     private var flashController: FlashWindowController?
     private var isCompiling = false
     private var compilingDelay: Timer?
+    private var compileStart: Date?
+    /// Source line at the top of the editor when an auto-compile began, used to
+    /// restore the preview viewport around the edit after the recompile.
+    private var pendingAnchor: Int?
 
     private weak var enginePopup: NSPopUpButton?
     private weak var autoSwitch: NSSwitch?
@@ -239,14 +243,26 @@ final class MainWindowController: NSWindowController {
             }
             guard self.autoCompile else { return }
             let source = self.editor.string
-            // A character edit strictly inside one safe display-math block is
-            // rendered in isolation and patched; everything else re-runs the
-            // full pipeline.
-            if let block = self.proximity.localBlock(editRange: self.editor.lastEditRange,
-                                                     source: source) {
+            // The invalidation engine classifies the edit:
+            //   LOCAL  — inside one safe display-math block → isolated render
+            //            (vector patch) instead of a full compile.
+            //   REGIONAL / GLOBAL — full compile; REGIONAL additionally anchors
+            //            the preview viewport on the edit.
+            let decision = self.proximity.engine.classify(
+                editRange: self.editor.lastEditRange, source: source,
+                isBalanced: LatexStructure.isBalanced(source))
+            self.proximity.metrics.recordDecision(decision.scope,
+                                                  reasons: decision.reasons)
+            switch decision.scope {
+            case .local(let block):
                 self.compiler.cancelScheduledCompile()
-                self.proximity.scheduleLocalRender(block: block, source: source)
-            } else {
+                self.proximity.scheduleLocalRender(block: block, source: source,
+                                                   engineName: self.compiler.engine)
+            case .regional:
+                self.proximity.invalidatePendingLocal()
+                self.pendingAnchor = self.editor.visibleTopLine
+                self.compiler.scheduleCompile(source: source)
+            case .global:
                 self.proximity.invalidatePendingLocal()
                 self.compiler.scheduleCompile(source: source)
             }
@@ -260,14 +276,15 @@ final class MainWindowController: NSWindowController {
             self?.beginCompilingIndicator()
             // A full compile supersedes any pending local render.
             self?.proximity.invalidatePendingLocal()
+            self?.compileStart = Date()
         }
 
         compiler.onFinished = { [weak self] report in
             self?.handleCompileFinished(report)
         }
 
-        proximity.onApplyPatch = { [weak self] page, rect, image in
-            self?.preview.applyPatch(page: page, bounds: rect, image: image)
+        proximity.onApplyPatch = { [weak self] page, rect, pdf in
+            self?.preview.applyPatch(page: page, bounds: rect, pdf: pdf)
         }
 
         proximity.onFallbackToFullCompile = { [weak self] source in
@@ -295,6 +312,17 @@ final class MainWindowController: NSWindowController {
             // next local edit knows where to patch.
             proximity.remap(pdfURL: pdfURL, document: preview.document,
                             source: editor.string)
+            // Record the new dependency baseline and bump the version guard.
+            let duration = compileStart.map { Date().timeIntervalSince($0) } ?? 0
+            proximity.noteFullCompile(source: editor.string, duration: duration)
+            // A regional compile re-anchors the preview on the edited region
+            // (the whole page re-laid-out; the anchor keeps the region in view).
+            if let anchor = pendingAnchor,
+               let target = proximity.anchorTarget(afterLine: anchor,
+                                                   source: editor.string) {
+                preview.reveal(page: target.page, rect: target.rect)
+            }
+            pendingAnchor = nil
             removeErrorToolbarItem()
             return
         }
@@ -489,6 +517,7 @@ final class MainWindowController: NSWindowController {
         editor.updateGutter()
         highlighter.rehighlightNow(editor: editor, scrollView: scrollView)
         proximity.reset()
+        pendingAnchor = nil
         preview.removePatches()
         compiler.resetIncrementalState()
         compiler.compileNow(source: editor.string)
@@ -514,6 +543,7 @@ final class MainWindowController: NSWindowController {
             editor.updateGutter()
             highlighter.rehighlightNow(editor: editor, scrollView: scrollView)
             proximity.reset()
+            pendingAnchor = nil
             preview.removePatches()
             compiler.resetIncrementalState()
             compiler.compileNow(source: editor.string)
@@ -740,6 +770,20 @@ final class MainWindowController: NSWindowController {
         guard isCompiling else { return }
         compiler.stopCompiling()
         endCompilingIndicator()
+    }
+
+    /// Live counts for the incremental preview subsystem (classifications,
+    /// cache behaviour, render timings, promotion reasons).
+    @objc func showIncrementalStats() {
+        let alert = NSAlert()
+        alert.messageText = "Incremental Preview Statistics"
+        alert.informativeText = proximity.metrics.summary()
+        alert.addButton(withTitle: "OK")
+        if let window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
     }
 
     @objc func toggleAutoCompile() {

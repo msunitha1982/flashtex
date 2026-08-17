@@ -103,18 +103,18 @@ final class PreviewView: NSView {
 
     var document: PDFDocument? { pdfView.document }
 
-    /// Overlay the freshly rendered image onto `bounds` on `page` (0-based).
-    /// A paper-white square first hides the stale equation; the image — aspect
-    /// fitted into the old region — is drawn on top, so it floats at roughly
-    /// the same place and size as before.
-    func applyPatch(page: Int, bounds: CGRect, image: NSImage) {
+    /// Overlay the freshly rendered vector fragment onto `bounds` on `page`
+    /// (0-based). A paper-white square first hides the stale equation; the
+    /// fragment's CGPDFPage is then streamed into the context at its natural
+    /// size — a fully vector patch, crisp at any zoom.
+    func applyPatch(page: Int, bounds: CGRect, pdf: PDFDocument) {
         removePatches()
         guard let doc = pdfView.document,
               page >= 0, page < doc.pageCount,
               let pdfPage = doc.page(at: page),
               bounds.width > 0, bounds.height > 0 else { return }
 
-        let annotation = PatchAnnotation(bounds: bounds, image: image)
+        let annotation = VectorPatchAnnotation(bounds: bounds, fragment: pdf)
         pdfPage.addAnnotation(annotation)
         patchAnnotations.append(annotation)
     }
@@ -132,6 +132,23 @@ final class PreviewView: NSView {
         }
         patchAnnotations.removeAll()
     }
+
+    // MARK: - Viewport restore (content-anchored)
+
+    /// Scroll so that `rect` (page space, points) on `page` (0-based) is at the
+    /// top of the visible area. Used after a regional compile to keep the
+    /// edited region under the reader's eyes even though the page reflowed.
+    func reveal(page: Int, rect: CGRect) {
+        guard let doc = pdfView.document,
+              page >= 0, page < doc.pageCount,
+              let pdfPage = doc.page(at: page) else { return }
+        let target = CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height)
+        DispatchQueue.main.async { [weak self] in
+            self?.pdfView.go(to: target, on: pdfPage)
+        }
+    }
+
+    // MARK: - Zoom
 
     /// Fit the current page's width to the pane, clamped to sane bounds.
     private func rescaleToFit() {
@@ -161,15 +178,15 @@ final class PreviewView: NSView {
     }
 }
 
-/// Draws a paper-white square plus the freshly rendered equation image over the
-/// stale region of a preview page. PDFKit invokes `draw(with:in:)` for custom
-/// annotation subclasses; the mask and image are combined here so they move as
-/// one annotation.
-private final class PatchAnnotation: PDFAnnotation {
-    let image: NSImage
+/// Draws a paper-white square plus the freshly rendered vector equation over
+/// the stale region of a preview page. PDFKit invokes `draw(with:in:)` for
+/// custom annotation subclasses; the fragment's PDF page is streamed in via
+/// `CGContext.drawPDFPage` so the glyphs stay vector at every zoom.
+private final class VectorPatchAnnotation: PDFAnnotation {
+    let fragment: PDFDocument
 
-    init(bounds: CGRect, image: NSImage) {
-        self.image = image
+    init(bounds: CGRect, fragment: PDFDocument) {
+        self.fragment = fragment
         super.init(bounds: bounds, forType: .square, withProperties: nil)
         shouldDisplay = true
     }
@@ -181,17 +198,28 @@ private final class PatchAnnotation: PDFAnnotation {
         context.setFillColor(NSColor.white.cgColor)
         context.fill(bounds)
 
-        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+        guard let page = fragment.page(at: 0),
+              let pageRef = page.pageRef else {
             context.restoreGState()
             return
         }
-        // The annotation context is in page space (origin bottom-left, y up);
-        // flip vertically so the raster, whose rows run top-to-bottom, isn't
-        // drawn upside down.
-        context.translateBy(x: bounds.minX, y: bounds.maxY)
-        context.scaleBy(x: 1, y: -1)
-        context.draw(cg, in: CGRect(x: 0, y: 0,
-                                    width: bounds.width, height: bounds.height))
+        let media = page.bounds(for: .mediaBox)
+        guard media.width > 0, media.height > 0 else {
+            context.restoreGState()
+            return
+        }
+
+        // Draw the fragment at its natural size (1:1 points), centered within
+        // the old region so a slightly narrower/wider equation still lines up
+        // with TeX's horizontal centering. The annotation context is already in
+        // page space (origin bottom-left), so map the fragment's media box to
+        // the target rect.
+        let target = CGRect(x: bounds.minX + max(0, (bounds.width - media.width) / 2),
+                            y: bounds.minY + max(0, (bounds.height - media.height) / 2),
+                            width: media.width, height: media.height)
+        context.translateBy(x: target.minX, y: target.minY)
+        context.translateBy(x: -media.minX, y: -media.minY)
+        context.drawPDFPage(pageRef)
         context.restoreGState()
     }
 }

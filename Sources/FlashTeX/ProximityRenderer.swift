@@ -1,54 +1,43 @@
 import AppKit
 import PDFKit
+#if canImport(FlashTeXCore)
+import FlashTeXCore
+#endif
 
-// ProximityRenderer — "proximity-based" preview rendering.
+// ProximityRenderer — "proximity" preview rendering (redesign v2).
 //
 // A full document recompile is overkill when the user tweaks a single math
 // block (e.g. `E = mc^2` → `E = mc^3` inside \begin{equation}…\end{equation}).
-// ProximityRenderer detects such LOCAL edits, re-renders just the affected
-// block in isolation (reusing the document's real preamble so packages and
-// macros behave identically), and patches that block's region in the existing
-// PDF preview instead of swapping in a freshly compiled document.
+// The pure decision logic lives in FlashTeXCore.InvalidationEngine; this class
+// is the host: it owns the isolated TeX compile, the bounded result cache, the
+// block → PDF-region map (from syncTeX), stale-render protection, and metrics.
 //
-//   * LOCAL  — the edit lies strictly inside one display-math block of a
-//              supported kind with no cross-references, counter games or
-//              graphics; only that block is compiled and patched.
-//   * GLOBAL — anything else (and every case the conservative classifier is
-//              unsure about) falls back to the full Compiler.
+//   * LOCAL  — the engine says the edit is inside one safe display-math block.
+//              The block is recompiled alone (real documentclass + preamble,
+//              equation number injected) and the resulting TeX PDF fragment is
+//              applied as a *vector* patch: a custom annotation streams the
+//              fragment's CGPDFPage into the preview context via
+//              CGContext.drawPDFPage — crisp at every zoom, no rasterization.
+//   * REGIONAL / GLOBAL — a full compile. The host can restore the viewport
+//              around the edit after a regional compile (content-anchored via
+//              `anchorTarget(afterLine:source:)`).
 //
-// Source → PDF mapping comes from the .synctex.gz every engine already writes
-// (`-synctex=1`): pdfTeX tags each glyph with the (input, line) that produced
-// it, so a display block's rendered region is the union of the glyphs whose
-// line falls inside the block's source line span. Inline math is not patched
-// because syncTeX carries no column information — a local edit inside `$…$`
-// is classified GLOBAL and full-compiled.
+// Safety:
+//   * docVersion — bumped on every full compile; a local render is only applied
+//     if the version it started under is still current.
+//   * epoch — bumped whenever pending local work is invalidated (full compile
+//     starting, document replaced); only the latest job may apply.
+//   * block identity — re-scanned at completion; if the block's text changed
+//     while rendering, the patch is discarded.
+//   * geometry rule — patch only if the natural (1:1 point-space) size matches
+//     the mapped region (height ±1 pt, width ≤ old+2 pt); otherwise the page
+//     may have reflowed and a full compile is needed.
 //
-// The preview patch is a single custom PDF annotation over the old region: it
-// paints a paper-white square (hides the stale equation) then draws the newly
-// rendered raster on top. If the new equation's natural size drifts too far
-// from the old region the patch is abandoned for a full compile (layout has
-// probably reflowed).
+// There is no persistent TeX daemon (pdflatex & friends are batch compilers), so
+// "fast" comes from the LRU fragment cache + a stable per-preamble workspace,
+// never a warm process.
 
 final class ProximityRenderer {
-
-    /// Kind of math block, derived from its delimiters/environment.
-    enum Kind: Equatable {
-        case inline              // $…$  (never patched locally: no column info)
-        case dollarDisplay       // $$…$$
-        case bracket             // \[…\]
-        case environment(String) // \begin{…}…\end{…} — the environment name
-    }
-
-    struct Block {
-        let index: Int
-        let kind: Kind
-        let range: NSRange       // full range including the delimiters
-        let display: Bool
-        let body: String         // trimmed inner source (no delimiters)
-        let raw: String          // exact source substring (delimiters included)
-        let lineStart: Int       // 1-based source lines spanned by the block
-        let lineEnd: Int
-    }
 
     /// A block's rendered region in the preview PDF (page 0-based, points).
     struct MappedRegion {
@@ -58,172 +47,228 @@ final class ProximityRenderer {
 
     // MARK: - Host callbacks
 
-    /// Deliver a finished local patch (page index, region, image) on the main
-    /// thread.
-    var onApplyPatch: ((Int, CGRect, NSImage) -> Void)?
-    /// The classifier decided a full compile is needed instead (or the local
-    /// render failed); the host re-arms the real Compiler with the source.
+    /// Deliver a finished local patch (page index, region, vector fragment).
+    var onApplyPatch: ((Int, CGRect, PDFDocument) -> Void)?
+    /// The geometry rule failed or the isolated render failed: full compile.
     var onFallbackToFullCompile: ((String) -> Void)?
 
-    // MARK: - Local edit classification
+    // MARK: - State
 
-    /// The single math block a character edit is strictly inside, if that
-    /// block is safe to re-render in isolation. Nil means "full compile".
-    func localBlock(editRange: NSRange, source: String) -> Block? {
-        guard editRange.location != NSNotFound else { return nil }
-        let ns = source as NSString
-        let blocks = ProximityBlockScanner().blocks(in: ns)
-        var hit: Block?
-        for b in blocks {
-            let inside = editRange.location > b.range.location
-                && NSMaxRange(editRange) < NSMaxRange(b.range)
-            guard inside else { continue }
-            if hit != nil { return nil }   // spans two blocks → global
-            hit = b
-        }
-        guard let block = hit else { return nil }
-        return isLocalSafe(block, source: source) ? block : nil
-    }
+    let engine = InvalidationEngine()
+    let metrics = IncrementalMetrics()
 
-    /// The conservative LOCAL gate. Anything uncertain → GLOBAL.
-    private func isLocalSafe(_ block: Block, source: String) -> Bool {
-        switch block.kind {
-        case .inline:
-            return false
-        case .dollarDisplay, .bracket:
-            break
-        case .environment(let name):
-            guard ProximityBlockScanner.localEnvs.contains(name) else { return false }
-        }
-
-        let body = block.body
-        let globalMarkers = [
-            "\\ref{", "\\eqref{", "\\pageref{", "\\autoref{", "\\cref{", "\\vref{",
-            "\\cite{", "\\nocite{", "\\bibliography", "\\printbibliography",
-            "\\index{", "\\makeindex", "\\glossary", "\\printglossary",
-            "\\footnote{", "\\footnotemark", "\\marginpar{",
-            "\\includegraphics{", "\\input{", "\\include{",
-            "\\begin{tikzpicture}", "\\begin{asy}", "\\begin{verbatim}",
-            "\\begin{minipage}", "\\begin{tabular}", "\\begin{lstlisting}",
-            "\\begin{minted}",
-            "\\newcommand", "\\renewcommand", "\\newenvironment", "\\def\\",
-            "\\usepackage", "\\numberwithin", "\\setcounter", "\\addtocounter",
-            "\\theequation", "\\section", "\\subsection", "\\subsubsection",
-            "\\chapter", "\\paragraph", "\\tableofcontents", "\\caption",
-        ]
-        if globalMarkers.contains(where: { body.contains($0) }) { return false }
-
-        // Counter games anywhere in the document break the assumption that
-        // equation numbers follow the sequential \begin{equation} count, so the
-        // isolated render could show the wrong number.
-        let counterMarkers = ["\\numberwithin", "\\counterwithin", "\\counterwithout",
-                              "\\setcounter{equation}", "\\addtocounter{equation}",
-                              "\\renewcommand{\\theequation}", "\\newcommand{\\theequation}"]
-        if counterMarkers.contains(where: { source.contains($0) }) { return false }
-
-        // A preamble that pulls in external files isn't self-contained: the
-        // isolated compile may differ from the real document.
-        let preamble = preambleOf(source)
-        if ["\\input{", "\\include{", "\\includegraphics{"]
-            .contains(where: { preamble.contains($0) }) { return false }
-
-        return true
-    }
-
-    private func preambleOf(_ source: String) -> String {
-        let ns = source as NSString
-        let begin = ns.range(of: "\\begin{document}").location
-        guard begin != NSNotFound else { return source }
-        return ns.substring(to: begin)
-    }
-
-    // MARK: - Scheduled local render
-
+    private var map: [Int: MappedRegion] = [:]
     private var localTimer: Timer?
-    private var localID = 0
-    private let work = DispatchQueue(label: "flashtex.proximity", qos: .userInitiated)
+    private var epoch = 0          // bumped on any invalidation / full-compile start
+    private var docVersion = 0     // bumped on every successful full compile
+    private var lastFullCompileSeconds: TimeInterval?
+    private var lastPreamble = ""
+
+    // MARK: - Fragment cache (bounded LRU)
+
+    private struct CacheEntry {
+        let pdf: PDFDocument
+        let naturalSize: CGSize
+    }
+    private var cache: [String: CacheEntry] = [:]
+    private var cacheOrder: [String] = []
+    private let cacheLimit = 64
+
+    // MARK: - Full-compile bookkeeping
+
+    /// Reset everything tied to a document (document replaced).
+    func reset() {
+        invalidatePendingLocal()
+        engine.reset()
+        map = [:]
+        lastPreamble = ""
+        lastFullCompileSeconds = nil
+    }
+
+    /// Called by the host after a successful full compile: bumps the version,
+    /// records the dependency baseline and measures the compile.
+    func noteFullCompile(source: String, duration: TimeInterval) {
+        let model = DocumentModelParser().parse(source)
+        engine.noteFullCompile(model: model)
+        docVersion += 1
+        lastFullCompileSeconds = duration
+        lastPreamble = model.preambleText
+        metrics.recordFullCompile(time: duration)
+    }
+
+    /// Rebuild the block → PDF-region map from the document's .synctex.gz
+    /// after a successful full compile.
+    func remap(pdfURL: URL, document: PDFDocument?, source: String) {
+        map = [:]
+        guard let dir = pdfURL.deletingLastPathComponent() as URL?,
+              let synctexURL = findSynctexFile(in: dir),
+              let text = decompress(synctexURL),
+              let parsed = SynctexParser.parse(text, sourceName: (pdfURL.lastPathComponent as NSString).deletingPathExtension) else { return }
+
+        let blocks = BlockScanner().blocks(in: source as NSString)
+        for block in blocks {
+            guard let region = parsed.region(input: parsed.mainInput,
+                                             lineStart: block.lineStart,
+                                             lineEnd: block.lineEnd,
+                                             document: document) else { continue }
+            map[block.index] = region
+        }
+    }
+
+    /// The nearest mapped math block at or after `line` (the source line that
+    /// was at the top of the editor's viewport when the compile began). The
+    /// host uses this to restore the preview viewport after a regional compile.
+    func anchorTarget(afterLine line: Int, source: String) -> MappedRegion? {
+        let blocks = BlockScanner().blocks(in: source as NSString)
+        for block in blocks {
+            guard block.lineEnd >= line else { continue }
+            guard let region = map[block.index] else { continue }
+            return region
+        }
+        return nil
+    }
+
+    // MARK: - Scheduling
 
     /// Cancel any pending or in-flight local render (a full compile is taking
     /// over, or the document is being replaced).
     func invalidatePendingLocal() {
-        localID += 1
+        epoch += 1
         localTimer?.invalidate()
         localTimer = nil
     }
 
-    /// Debounce a local render the way the Compiler debounces a full compile.
-    func scheduleLocalRender(block: Block, source: String) {
-        localID += 1
-        let id = localID
+    /// Debounce a local render. The delay adapts to how long the last full
+    /// compile took and how busy the machine is.
+    func scheduleLocalRender(block: TeXMathBlock, source: String, engineName: String) {
+        epoch += 1
+        let id = epoch
         localTimer?.invalidate()
-        let delay = max(0.01, SettingsStore.shared.renderDebounceMs / 1000.0)
+        let base = SettingsStore.shared.renderDebounceMs
+        let delay = AdaptiveDebounce.localDelay(
+            baseMs: base,
+            lastFullCompileSeconds: lastFullCompileSeconds,
+            isBusy: ProcessInfo.processInfo.thermalState == .serious)
         let t = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
-            self?.performLocalRender(id: id, block: block, source: source)
+            self?.performLocalRender(id: id, block: block, source: source,
+                                     engineName: engineName)
         }
         localTimer = t
         RunLoop.main.add(t, forMode: .common)
     }
 
-    private func performLocalRender(id: Int, block: Block, source: String) {
-        guard id == localID else { return }
+    // MARK: - Local render
+
+    private struct Snapshot {
+        let block: TeXMathBlock
+        let source: String
+        let engineName: String
+        let version: Int
+        let key: String
+        let equationNumber: Int
+    }
+
+    private var snapshot: Snapshot?
+
+    private func performLocalRender(id: Int, block: TeXMathBlock, source: String,
+                                    engineName: String) {
+        guard id == epoch else { return }
+        let equationNumber = BlockScanner().countNumberedEquations(
+            before: block.range.location, in: source) + 1
+        let preamble = DocumentModelParser().parse(source).preambleText
+        let key = InvalidationEngine.cacheKey(block: block, preamble: preamble,
+                                              equationNumber: equationNumber,
+                                              engine: engineName)
+        snapshot = Snapshot(block: block, source: source, engineName: engineName,
+                            version: docVersion, key: key, equationNumber: equationNumber)
+
+        let work = DispatchQueue.global(qos: .userInitiated)
         work.async { [weak self] in
-            let rendered = self?.renderBlockInIsolation(block: block, source: source)
+            guard let self else { return }
+            let start = Date()
+            let entry: CacheEntry?
+            if let cached = self.cache[key] {
+                self.metrics.recordCacheHit()
+                entry = cached
+            } else {
+                self.metrics.recordCacheMiss()
+                entry = self.renderFragment(block: block, source: source,
+                                            equationNumber: equationNumber,
+                                            engineName: engineName)
+            }
+            let elapsed = Date().timeIntervalSince(start)
             DispatchQueue.main.async {
-                guard let self, id == self.localID else { return }
-                self.finishLocalRender(id: id, rendered: rendered, block: block, source: source)
+                guard id == self.epoch else { return }
+                self.finishLocalRender(id: id, entry: entry, time: elapsed)
             }
         }
     }
 
-    private func finishLocalRender(id: Int, rendered: RenderedBlock?, block: Block,
-                                   source: String) {
-        guard id == localID else { return }
-        guard let rendered,
-              let mapped = map[block.index],
-              rendered.naturalSize.width > 0, rendered.naturalSize.height > 0,
-              mapped.rect.width > 0, mapped.rect.height > 0 else {
-            onFallbackToFullCompile?(source)
+    private func finishLocalRender(id: Int, entry: CacheEntry?, time: TimeInterval) {
+        guard id == epoch else { return }
+        guard let snapshot, snapshot.version == docVersion else {
+            metrics.recordStaleDiscard()
             return
         }
-        let widthRatio = rendered.naturalSize.width / mapped.rect.width
-        let heightRatio = rendered.naturalSize.height / mapped.rect.height
-        // If the equation shrank or grew a lot the page has reflowed — a
-        // patch would leave stale artifacts, so do a real compile instead.
-        guard (0.85...1.35).contains(widthRatio),
-              (0.85...1.30).contains(heightRatio) else {
-            onFallbackToFullCompile?(source)
+        // Block identity: if the block changed while we were rendering, the
+        // patch would target the wrong source. Re-scan the *current* source
+        // (the snapshot source is only valid if the user kept typing elsewhere
+        // and the document version didn't bump — a full compile would have done
+        // so, so compare against the snapshot source).
+        let blocks = BlockScanner().blocks(in: snapshot.source as NSString)
+        guard blocks.indices.contains(snapshot.block.index),
+              blocks[snapshot.block.index].raw == snapshot.block.raw else {
+            metrics.recordStaleDiscard()
             return
         }
-        onApplyPatch?(mapped.page, mapped.rect, rendered.image)
+
+        metrics.recordLocalRender(time: time)
+
+        guard let entry,
+              let mapped = map[snapshot.block.index] else {
+            metrics.recordFallback()
+            onFallbackToFullCompile?(snapshot.source)
+            return
+        }
+
+        // Geometry rule: the natural size must match the mapped region.
+        guard InvalidationEngine.geometrySafe(naturalSize: entry.naturalSize,
+                                              mappedRect: mapped.rect) else {
+            metrics.recordFallback()
+            onFallbackToFullCompile?(snapshot.source)
+            return
+        }
+
+        self.cache[snapshot.key] = entry
+        metrics.recordLocalApplied(naturalSize: entry.naturalSize)
+        onApplyPatch?(mapped.page, mapped.rect, entry.pdf)
     }
 
     // MARK: - Isolated rendering
 
-    struct RenderedBlock {
-        let image: NSImage
-        let naturalSize: CGSize   // the image's logical size in PDF points
-    }
-
     /// Compile the block alone (documentclass + real preamble + block) with a
-    /// single pdflatex pass and return a tight transparent raster of it.
-    private func renderBlockInIsolation(block: Block, source: String) -> RenderedBlock? {
-        let isolated = buildIsolatedSource(block: block, source: source)
-        guard let pdflatex = TeX.findExecutable("pdflatex") else { return nil }
+    /// single engine pass and return the tightly-cropped *vector* PDF page.
+    /// The natural size is the page's media box (points, 1:1).
+    private func renderFragment(block: TeXMathBlock, source: String,
+                                equationNumber: Int,
+                                engineName: String) -> CacheEntry? {
+        guard let engineURL = TeX.findExecutable(binaryName(for: engineName)) else { return nil }
+        let isolated = buildIsolatedSource(block: block, source: source,
+                                           equationNumber: equationNumber)
 
-        let fm = FileManager.default
-        let dir = fm.temporaryDirectory
-            .appendingPathComponent("flashtex-local-\(UUID().uuidString)")
-        do { try fm.createDirectory(at: dir, withIntermediateDirectories: true) }
-        catch { return nil }
-        defer { try? fm.removeItem(at: dir) }
-
-        let texURL = dir.appendingPathComponent("local.tex")
+        // Shared workspace per preamble: the same directory across renders so
+        // the filesystem stays warm; the real cost (format load) is inherently
+        // per-run and covered by the fragment cache.
+        let workspace = workspaceURL(preambleHash: DocumentModelParser.djb2(lastPreamble))
+        try? FileManager.default.createDirectory(at: workspace,
+                                                 withIntermediateDirectories: true)
+        let texURL = workspace.appendingPathComponent("local.tex")
         do { try isolated.write(to: texURL, atomically: true, encoding: .utf8) }
         catch { return nil }
 
         let proc = Process()
-        proc.executableURL = pdflatex
-        proc.currentDirectoryURL = dir
+        proc.executableURL = engineURL
+        proc.currentDirectoryURL = workspace
         proc.environment = TeX.environment()
         proc.arguments = ["-interaction=nonstopmode", "-halt-on-error",
                           "-file-line-error", "local.tex"]
@@ -241,90 +286,39 @@ final class ProximityRenderer {
         sema.wait()
         guard !timedOut, proc.terminationStatus == 0 else { return nil }
 
-        let pdfURL = dir.appendingPathComponent("local.pdf")
+        let pdfURL = workspace.appendingPathComponent("local.pdf")
         guard let pdfData = try? Data(contentsOf: pdfURL),
               let pdf = PDFDocument(data: pdfData),
               let page = pdf.page(at: 0) else { return nil }
         let bounds = page.bounds(for: .mediaBox)
         guard bounds.width > 0, bounds.height > 0 else { return nil }
 
-        // Rasterize the whole page at 6x on a transparent canvas, then crop to
-        // the equation's ink — a tight image that scales crisply in the preview.
-        let scale = MathRenderer.rasterScale
-        let pxW = Int((bounds.width * scale).rounded())
-        let pxH = Int((bounds.height * scale).rounded())
-        guard pxW > 0, pxH > 0,
-              let ctx = CGContext(data: nil, width: pxW, height: pxH,
-                                  bitsPerComponent: 8, bytesPerRow: 0,
-                                  space: CGColorSpaceCreateDeviceRGB(),
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-        else { return nil }
-        ctx.scaleBy(x: scale, y: scale)
-        ctx.translateBy(x: -bounds.minX, y: -bounds.minY)
-        page.draw(with: .mediaBox, to: ctx)
-        guard let full = ctx.makeImage() else { return nil }
-
-        // Locate the ink on a small probe instead of scanning the full 6x
-        // raster (millions of pixels, prohibitively slow in debug builds), then
-        // crop the full-res image to that box — CG cropping is instant. The
-        // box is already in `full`'s pixel space.
-        guard let ink = inkBoundingBox(of: full, probeScale: 1.0 / scale),
-              let trimmed = full.cropping(to: ink) else { return nil }
-
-        let naturalSize = CGSize(width: CGFloat(trimmed.width) / scale,
-                                 height: CGFloat(trimmed.height) / scale)
-        // Flatten onto white (the preview paper) so the annotation needs no
-        // alpha handling.
-        let flat = compositingOnWhite(trimmed, size: naturalSize)
-        return RenderedBlock(image: flat, naturalSize: naturalSize)
+        // Keep the vector PDF page; the annotation streams it via drawPDFPage.
+        let fragment = PDFDocument()
+        fragment.insert(page, at: 0)
+        return CacheEntry(pdf: fragment,
+                          naturalSize: CGSize(width: bounds.width, height: bounds.height))
     }
 
-    /// The bounding box (in `cg`'s pixel space) of the opaque pixels, found by
-    /// downsampling the image to a fraction of its size and scanning that. The
-    /// probe draw is done by CoreGraphics (fast); only the small probe is
-    /// walked in Swift. `probeScale` is the downsample factor (e.g. 1/6 of the
-    /// full raster).
-    private func inkBoundingBox(of cg: CGImage, probeScale: CGFloat) -> CGRect? {
-        let probeW = max(1, Int(CGFloat(cg.width) * probeScale))
-        let probeH = max(1, Int(CGFloat(cg.height) * probeScale))
-        guard let probeCtx = CGContext(data: nil, width: probeW, height: probeH,
-                                       bitsPerComponent: 8, bytesPerRow: 0,
-                                       space: CGColorSpaceCreateDeviceRGB(),
-                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
-            return nil
-        }
-        probeCtx.draw(cg, in: CGRect(x: 0, y: 0, width: probeW, height: probeH))
-        guard let probe = probeCtx.makeImage(),
-              let provider = probe.dataProvider,
-              let data = provider.data,
-              let bytes = CFDataGetBytePtr(data),
-              probe.bitsPerPixel == 32 else { return nil }
+    /// The engine's executable name. `engineName` is one of the toolbar's
+    /// labels (pdflatex/xelatex/lualatex/tectonic).
+    private func binaryName(for engineName: String) -> String {
+        engineName == "tectonic" ? "tectonic" : engineName
+    }
 
-        let w = probe.width, h = probe.height, bpr = probe.bytesPerRow
-        var minX = w, minY = h, maxX = -1, maxY = -1
-        for y in 0..<h {
-            var row = bytes + y * bpr
-            for x in 0..<w {
-                if row[3] > 16 {
-                    if x < minX { minX = x }
-                    if x > maxX { maxX = x }
-                    if y < minY { minY = y }
-                    if y > maxY { maxY = y }
-                }
-                row += 4
-            }
-        }
-        guard maxX >= minX, maxY >= minY else { return nil }
-        let scaleUp = CGFloat(cg.width) / CGFloat(w)
-        return CGRect(x: CGFloat(minX) * scaleUp, y: CGFloat(minY) * scaleUp,
-                      width: CGFloat(maxX - minX + 1) * scaleUp,
-                      height: CGFloat(maxY - minY + 1) * scaleUp)
+    /// A stable per-preamble temp workspace (survives between renders of the
+    /// same document).
+    private func workspaceURL(preambleHash: UInt64) -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("flashtex-workspace-\(preambleHash)", isDirectory: true)
     }
 
     /// Assemble the isolated document: the source's real documentclass and
-    /// preamble, empty page style, then the block verbatim. Numbered
-    /// `equation` blocks get the document's next equation number injected.
-    private func buildIsolatedSource(block: Block, source: String) -> String {
+    /// preamble, tightpage preview so each block becomes one tightly-cropped
+    /// page, then the block verbatim. Numbered `equation` blocks get the
+    /// document's next equation number injected.
+    private func buildIsolatedSource(block: TeXMathBlock, source: String,
+                                     equationNumber: Int) -> String {
         let ns = source as NSString
         var docClass = "\\documentclass{article}"
         var preamble = ""
@@ -344,37 +338,20 @@ final class ProximityRenderer {
         }
 
         var injection = ""
-        if isNumberedEquation(block) {
-            let number = equationCount(before: block.range.location, in: source) + 1
-            injection = "\\setcounter{equation}{\(number - 1)}\n"
+        if InvalidationEngine.isNumberedEquation(block) {
+            injection = "\\setcounter{equation}{\(equationNumber - 1)}\n"
         }
         return """
         \(docClass)
         \(preamble)
+        \\usepackage[active,tightpage]{preview}
         \\pagestyle{empty}
         \\begin{document}
-        \(injection)\(block.raw)
+        \(injection)\\begin{preview}
+        \(block.raw)
+        \\end{preview}
         \\end{document}
         """
-    }
-
-    private func isNumberedEquation(_ block: Block) -> Bool {
-        if case .environment(let name) = block.kind { return name == "equation" }
-        return false
-    }
-
-    /// Number of `\begin{equation}` blocks that start before `location`
-    /// (starred variants don't increment the counter and are excluded).
-    private func equationCount(before location: Int, in source: String) -> Int {
-        let pattern = #"\\begin\{equation\}(?!\*)"#
-        guard let re = try? NSRegularExpression(pattern: pattern) else { return 0 }
-        let ns = source as NSString
-        var count = 0
-        for m in re.matches(in: source, range: NSRange(location: 0, length: ns.length))
-            where m.range.location < location {
-            count += 1
-        }
-        return count
     }
 
     private func documentClassMatch(in source: String) -> NSTextCheckingResult? {
@@ -383,55 +360,7 @@ final class ProximityRenderer {
         return re.firstMatch(in: source, range: NSRange(location: 0, length: (source as NSString).length))
     }
 
-    /// Draw the raster onto a white canvas the same logical size, so the patch
-    /// image is opaque and needs no alpha handling from PDFKit.
-    private func compositingOnWhite(_ cg: CGImage, size: CGSize) -> NSImage {
-        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil,
-                                         pixelsWide: cg.width, pixelsHigh: cg.height,
-                                         bitsPerSample: 8, samplesPerPixel: 4,
-                                         hasAlpha: true, isPlanar: false,
-                                         colorSpaceName: .deviceRGB,
-                                         bytesPerRow: 0, bitsPerPixel: 0),
-              let ctx = NSGraphicsContext(bitmapImageRep: rep) else {
-            return NSImage(cgImage: cg, size: size)
-        }
-        let g = ctx.cgContext
-        g.setFillColor(NSColor.white.cgColor)
-        g.fill(CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
-        g.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
-        guard let flat = rep.cgImage else { return NSImage(cgImage: cg, size: size) }
-        return NSImage(cgImage: flat, size: size)
-    }
-
-    // MARK: - Source → PDF mapping (syncTeX)
-
-    private(set) var map: [Int: MappedRegion] = [:]
-
-    /// Reset the mapping and any pending local work (document replaced).
-    func reset() {
-        invalidatePendingLocal()
-        map = [:]
-    }
-
-    /// Rebuild the block → PDF-region map from the document's .synctex.gz
-    /// after a successful full compile.
-    func remap(pdfURL: URL, document: PDFDocument?, source: String) {
-        map = [:]
-        guard let dir = pdfURL.deletingLastPathComponent() as URL?,
-              let synctexURL = findSynctexFile(in: dir),
-              let text = decompress(synctexURL),
-              let parsed = SynctexParser.parse(text, sourceName: (pdfURL.lastPathComponent as NSString).deletingPathExtension) else { return }
-
-        let ns = source as NSString
-        let blocks = ProximityBlockScanner().blocks(in: ns)
-        for block in blocks {
-            guard let region = parsed.region(input: parsed.mainInput,
-                                             lineStart: block.lineStart,
-                                             lineEnd: block.lineEnd,
-                                             document: document) else { continue }
-            map[block.index] = region
-        }
-    }
+    // MARK: - syncTeX helpers
 
     /// The .synctex.gz (or .synctex) an engine left in the build directory.
     private func findSynctexFile(in dir: URL) -> URL? {
@@ -468,202 +397,6 @@ final class ProximityRenderer {
     }
 }
 
-// MARK: - Block scanning
-
-/// Pure scanner for `$…$`, `$$…$$`, `\[…\]` and the display-math environments
-/// (a sibling of MathFoldParser that also records the block kind and raw text,
-/// which the proximity renderer needs).
-final class ProximityBlockScanner {
-
-    /// Environments that are safe to re-render alone. Non-starred multi-row
-    /// environments number their rows, so only starred ones qualify.
-    static let localEnvs: Set<String> = [
-        "equation", "equation*", "displaymath",
-        "align*", "gather*", "multline*", "flalign*", "alignat*",
-    ]
-
-    private let displayEnvs: Set<String> = [
-        "equation", "equation*", "displaymath",
-        "align", "align*", "gather", "gather*",
-        "multline", "multline*", "flalign", "flalign*",
-        "alignat", "alignat*",
-    ]
-
-    func blocks(in text: NSString) -> [ProximityRenderer.Block] {
-        var result: [ProximityRenderer.Block] = []
-        let lineStarts = self.lineStarts(of: text)
-        let n = text.length
-        var i = 0
-        while i < n {
-            let c = text.character(at: i)
-            if c == 36 {   // `$`
-                if let b = scanDollar(text, from: i, index: result.count,
-                                      lineStarts: lineStarts) {
-                    result.append(b)
-                    i = b.range.location + b.range.length
-                } else {
-                    i += 1
-                }
-                continue
-            }
-            if c == 92 {   // `\`
-                if let b = scanEnvironment(text, from: i, index: result.count,
-                                           lineStarts: lineStarts)
-                    ?? scanBracket(text, from: i, index: result.count,
-                                   lineStarts: lineStarts) {
-                    result.append(b)
-                    i = b.range.location + b.range.length
-                    continue
-                }
-            }
-            i += 1
-        }
-        return result
-    }
-
-    // MARK: - Scanners
-
-    private func scanDollar(_ text: NSString, from i: Int, index: Int,
-                            lineStarts: [Int]) -> ProximityRenderer.Block? {
-        let n = text.length
-        guard !isEscaped(text, i) else { return nil }
-        let display = i + 1 < n && text.character(at: i + 1) == 36
-        let open = display ? 2 : 1
-        var j = i + open
-        while j < n {
-            let c = text.character(at: j)
-            if c == 36 && !isEscaped(text, j) {
-                if display {
-                    if j + 1 < n && text.character(at: j + 1) == 36 {
-                        return makeBlock(text, from: i, open: open, firstClosing: j,
-                                         display: true, index: index,
-                                         kind: .dollarDisplay,
-                                         lineStarts: lineStarts)
-                    }
-                } else {
-                    if j + 1 < n && text.character(at: j + 1) == 36 {
-                        j += 1          // part of a $$ pair — keep scanning
-                        continue
-                    }
-                    return makeBlock(text, from: i, open: open, firstClosing: j,
-                                     display: false, index: index, kind: .inline,
-                                     lineStarts: lineStarts)
-                }
-            }
-            j += 1
-        }
-        return nil
-    }
-
-    private func scanEnvironment(_ text: NSString, from start: Int, index: Int,
-                                 lineStarts: [Int]) -> ProximityRenderer.Block? {
-        let n = text.length
-        guard start + 7 <= n,
-              text.substring(with: NSRange(location: start, length: 7)) == "\\begin{" else {
-            return nil
-        }
-        var k = start + 7
-        let nameStart = k
-        while k < n && text.character(at: k) != 125 { k += 1 }   // `}`
-        guard k < n, k > nameStart else { return nil }
-        let name = text.substring(with: NSRange(location: nameStart, length: k - nameStart))
-        guard displayEnvs.contains(name) else { return nil }
-
-        let bodyStart = k + 1
-        let searchRange = NSRange(location: bodyStart, length: n - bodyStart)
-        let endMarker = "\\end{\(name)}"
-        let endLoc = text.range(of: endMarker, options: [], range: searchRange).location
-        guard endLoc != NSNotFound else { return nil }
-
-        let end = endLoc + endMarker.count
-        let range = NSRange(location: start, length: end - start)
-        let body = text.substring(with: NSRange(location: bodyStart,
-                                                length: endLoc - bodyStart))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return makeBlock(text, range: range, display: true, index: index,
-                         kind: .environment(name), body: body, lineStarts: lineStarts)
-    }
-
-    private func scanBracket(_ text: NSString, from start: Int, index: Int,
-                             lineStarts: [Int]) -> ProximityRenderer.Block? {
-        let n = text.length
-        guard start + 1 < n,
-              text.character(at: start) == 92,        // `\`
-              text.character(at: start + 1) == 91 else { return nil }   // `[`
-        var k = start + 2
-        while k + 1 < n {
-            if text.character(at: k) == 92, text.character(at: k + 1) == 93 {   // `\]`
-                let range = NSRange(location: start, length: (k + 2) - start)
-                let body = text.substring(with: NSRange(location: start + 2,
-                                                        length: k - (start + 2)))
-                return makeBlock(text, range: range, display: true, index: index,
-                                 kind: .bracket, body: body, lineStarts: lineStarts)
-            }
-            k += 1
-        }
-        return nil
-    }
-
-    private func makeBlock(_ text: NSString, from start: Int, open: Int,
-                           firstClosing: Int, display: Bool, index: Int,
-                           kind: ProximityRenderer.Kind,
-                           lineStarts: [Int]) -> ProximityRenderer.Block {
-        let bodyStart = start + open
-        let body = text.substring(with: NSRange(location: bodyStart,
-                                                length: firstClosing - bodyStart))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let range = NSRange(location: start, length: firstClosing - start + open)
-        return makeBlock(text, range: range, display: display, index: index,
-                         kind: kind, body: body, lineStarts: lineStarts)
-    }
-
-    private func makeBlock(_ text: NSString, range: NSRange, display: Bool, index: Int,
-                           kind: ProximityRenderer.Kind, body: String,
-                           lineStarts: [Int]) -> ProximityRenderer.Block {
-        ProximityRenderer.Block(index: index, kind: kind, range: range,
-                                display: display, body: body,
-                                raw: text.substring(with: range),
-                                lineStart: lineNumber(at: range.location, lineStarts: lineStarts),
-                                lineEnd: lineNumber(at: max(NSMaxRange(range) - 1, range.location), lineStarts: lineStarts))
-    }
-
-    private func isEscaped(_ text: NSString, _ index: Int) -> Bool {
-        var count = 0
-        var k = index - 1
-        while k >= 0 && text.character(at: k) == 92 { count += 1; k -= 1 }
-        return count % 2 == 1
-    }
-
-    // MARK: - Line numbers
-
-    private func lineStarts(of text: NSString) -> [Int] {
-        var starts = [0]
-        var i = 0
-        while i < text.length {
-            if text.character(at: i) == 10 { starts.append(i + 1) }
-            i += 1
-        }
-        return starts
-    }
-
-    private func lineNumber(at charIndex: Int, lineStarts: [Int]) -> Int {
-        guard !lineStarts.isEmpty else { return 1 }
-        var low = 0
-        var high = lineStarts.count - 1
-        var result = 0
-        while low <= high {
-            let mid = (low + high) / 2
-            if lineStarts[mid] <= charIndex {
-                result = mid
-                low = mid + 1
-            } else {
-                high = mid - 1
-            }
-        }
-        return result + 1
-    }
-}
-
 // MARK: - syncTeX parsing
 
 /// Minimal parser for the syncTeX v1 text format (the uncompressed form of the
@@ -672,7 +405,7 @@ final class ProximityBlockScanner {
 /// We only need one fact: for each glyph, which (input, line) produced it and
 /// where it landed on the page. Tags appear as `input,line`; x coordinates are
 /// scaled points (65536 sp = 1 pt) measured from the page's left edge, and y
-/// increases downward from the page's top edge.
+/// increases downward from the page's top edge. There is no column information.
 private struct SynctexParser {
 
     struct Glyph {

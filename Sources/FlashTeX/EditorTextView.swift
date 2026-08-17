@@ -26,6 +26,21 @@ final class EditorTextView: NSTextView {
     /// whether the edit was local to a single math block.
     private(set) var lastEditRange = NSRange(location: NSNotFound, length: 0)
 
+    /// The 1-based source line at the top of the editor's visible area. The
+    /// preview restore anchors on this so a recompile keeps the edited region
+    /// on screen.
+    var visibleTopLine: Int? {
+        guard let layoutManager, let container = textContainer else { return nil }
+        guard let clip = enclosingScrollView?.contentView else { return nil }
+        let visible = convert(clip.bounds, from: clip)
+        let glyphRange = layoutManager.glyphRange(forBoundingRect: visible,
+                                                  in: container)
+        let charRange = layoutManager.characterRange(forGlyphRange: glyphRange,
+                                                     actualGlyphRange: nil)
+        guard charRange.length > 0 else { return nil }
+        return lineNumber(at: charRange.location)
+    }
+
     private let padding: CGFloat = 20
     private var gutterDigits = 3
     private var settingsObserver: NSObjectProtocol?
