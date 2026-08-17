@@ -88,17 +88,18 @@ final class Compiler {
         currentSource = source
         let delay = max(0.01, SettingsStore.shared.renderDebounceMs / 1000.0)
         let t = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
-            self?.compile(source: source, gateOnBalance: true)
+            self?.compile(source: source, gateOnBalance: true, livePreview: true)
         }
         debounce = t
         RunLoop.main.add(t, forMode: .common)
     }
 
-    /// Compile immediately, bypassing the debounce (Cmd+R, on open).
+    /// Compile immediately, bypassing the debounce (Cmd+R, on open). Manual
+    /// compiles render the document's true layout — no preview overrides.
     func compileNow(source: String) {
         debounce?.invalidate()
         currentSource = source
-        compile(source: source, gateOnBalance: false)
+        compile(source: source, gateOnBalance: false, livePreview: false)
     }
 
     /// Cancel any in-flight engine run without starting a new one. The bumped
@@ -149,7 +150,7 @@ final class Compiler {
 
     // MARK: - Compile orchestration
 
-    private func compile(source: String, gateOnBalance: Bool) {
+    private func compile(source: String, gateOnBalance: Bool, livePreview: Bool) {
         // Debounced auto-compiles wait until the document is structurally
         // balanced (every \begin has its \end) so mid-keystroke builds don't
         // churn out "Missing \end" failures. Manual compiles always run.
@@ -170,36 +171,43 @@ final class Compiler {
         }
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.runCompile(source: source, generation: gen)
+            self?.runCompile(source: source, generation: gen, livePreview: livePreview)
         }
     }
 
-    private func runCompile(source rawSource: String, generation gen: Int) {
+    private func runCompile(source rawSource: String, generation gen: Int,
+                            livePreview: Bool) {
         let source = sanitizeSource(rawSource)
 
         // The fallback ladder: (1) normal run, (2) the same engine with far
         // larger TeX memory pools when a capacity error is reported, (3) LuaTeX
         // — whose pools are dynamically allocated — as the last resort.
         var outcome = runPipeline(source: source, engineName: engine, gen: gen,
-                                  memoryOverride: false)
+                                  memoryOverride: false, livePreview: livePreview)
         // Tectonic's TeX memory pools are hardcoded (open upstream issue), so
         // the memory-override retry is pointless for it; the LuaTeX fallback
         // below still applies.
         if let r = outcome, !r.success, r.capacityError,
            r.engineName != "lualatex", r.engineName != "tectonic" {
             outcome = runPipeline(source: source, engineName: engine, gen: gen,
-                                  memoryOverride: true)
+                                  memoryOverride: true, livePreview: livePreview)
         }
         if let r = outcome, !r.success, r.capacityError,
            r.engineName != "lualatex", TeX.findExecutable("lualatex") != nil {
             outcome = runPipeline(source: source, engineName: "lualatex", gen: gen,
-                                  memoryOverride: false)
+                                  memoryOverride: false, livePreview: livePreview)
         }
     }
 
     private func runPipeline(source: String, engineName: String, gen: Int,
-                             memoryOverride: Bool) -> LatexReport? {
+                             memoryOverride: Bool, livePreview: Bool) -> LatexReport? {
         let start = Date()
+
+        // Live-preview compiles get preview-only preamble overrides (applied
+        // in memory; the user's source file is never touched). Manual compiles
+        // render the true document layout.
+        let source = livePreview ? injectLivePreviewOverrides(into: source) : source
+        var engineTimedOut = false
 
         // Reuse the persistent build dir when one exists so TeX's reference
         // files (.aux/.toc/.out) carry over between compiles — incremental
@@ -260,11 +268,13 @@ final class Compiler {
             var pass = runTectonicPass(engineURL: engineURL, buildDir: buildDir,
                                        extraArgs: searchPathArgs,
                                        firstRun: firstRunForEngine)
+            engineTimedOut = engineTimedOut || pass.timedOut
             if pass.ok && asyCount > 0 {
                 runAsymptoteIfNeeded(buildDir: buildDir)
                 pass = runTectonicPass(engineURL: engineURL, buildDir: buildDir,
                                        extraArgs: searchPathArgs,
                                        firstRun: firstRunForEngine)
+                engineTimedOut = engineTimedOut || pass.timedOut
             }
             let pdfURL = buildDir.appendingPathComponent("document.pdf")
             let logURL = buildDir.appendingPathComponent("document.log")
@@ -275,6 +285,9 @@ final class Compiler {
                 let tail = String(pass.output.suffix(300))
                 errors = [LatexIssue(line: -1, message: "Engine error: \(tail)",
                                      context: "", hint: "")]
+            }
+            if engineTimedOut {
+                errors.insert(timeoutIssue(engineName: engineName), at: 0)
             }
             let pdfSize = (try? FileManager.default.attributesOfItem(atPath: pdfURL.path)[.size] as? Int) ?? 0
             let success = pass.ok && pdfSize > 0
@@ -323,6 +336,7 @@ final class Compiler {
                                       draftMode: true, memoryOverride: memoryOverride,
                                       firstRun: firstRunForEngine)
             ok = pass1.ok
+            engineTimedOut = engineTimedOut || pass1.timedOut
             engineOutput = pass1.output
             // Explicit fallback: run `asy` ourselves so restricted shell-escape
             // configurations still work (all .asy files processed in parallel).
@@ -335,6 +349,7 @@ final class Compiler {
                                           draftMode: false, memoryOverride: memoryOverride,
                                           firstRun: firstRunForEngine)
                 ok = pass2.ok
+                engineTimedOut = engineTimedOut || pass2.timedOut
                 engineOutput = pass2.output
             }
             if ok && referenceHash(buildDir) != refsAfter1 {
@@ -342,6 +357,7 @@ final class Compiler {
                                           draftMode: false, memoryOverride: memoryOverride,
                                           firstRun: firstRunForEngine)
                 ok = pass3.ok
+                engineTimedOut = engineTimedOut || pass3.timedOut
                 engineOutput = pass3.output
             }
         } else {
@@ -349,6 +365,7 @@ final class Compiler {
                                       draftMode: false, memoryOverride: memoryOverride,
                                       firstRun: firstRunForEngine)
             ok = pass1.ok
+            engineTimedOut = engineTimedOut || pass1.timedOut
             engineOutput = pass1.output
             // Documents with \begin{asy} pulled in via \input — or whose .asy
             // assets only materialise during compilation — need a quick second
@@ -358,6 +375,7 @@ final class Compiler {
                                           draftMode: false, memoryOverride: memoryOverride,
                                           firstRun: firstRunForEngine)
                 ok = pass2.ok
+                engineTimedOut = engineTimedOut || pass2.timedOut
                 engineOutput = pass2.output
             }
         }
@@ -374,6 +392,9 @@ final class Compiler {
             let tail = String(engineOutput.suffix(300))
             errors = [LatexIssue(line: -1, message: "Engine error: \(tail)",
                                  context: "", hint: "")]
+        }
+        if engineTimedOut {
+            errors.insert(timeoutIssue(engineName: engineName), at: 0)
         }
         let pdfSize = (try? FileManager.default.attributesOfItem(atPath: pdfURL.path)[.size] as? Int) ?? 0
         let success = ok && pdfSize > 0
@@ -420,7 +441,8 @@ final class Compiler {
     private func runSinglePass(engineURL: URL, buildDir: URL,
                                draftMode: Bool = false,
                                memoryOverride: Bool = false,
-                               firstRun: Bool = false) -> (ok: Bool, output: String) {
+                               firstRun: Bool = false) -> (ok: Bool, output: String,
+                                                           timedOut: Bool) {
         let process = Process()
         process.executableURL = engineURL
         process.currentDirectoryURL = buildDir
@@ -455,7 +477,7 @@ final class Compiler {
         // Draft passes never write the PDF by design, so they can't be judged
         // by its presence — only by the engine's exit code.
         let ok = result.exitCode == 0 && (draftMode || pdfSize > 0) && !result.timedOut
-        return (ok, output)
+        return (ok, output, result.timedOut)
     }
 
     /// One Tectonic invocation. Unlike the classic engines, `tectonic -X
@@ -468,7 +490,7 @@ final class Compiler {
     private func runTectonicPass(engineURL: URL, buildDir: URL,
                                  extraArgs: [String] = [],
                                  firstRun: Bool = false)
-        -> (ok: Bool, output: String) {
+        -> (ok: Bool, output: String, timedOut: Bool) {
         let process = Process()
         process.executableURL = engineURL
         process.currentDirectoryURL = buildDir
@@ -491,7 +513,7 @@ final class Compiler {
         let pdfURL = buildDir.appendingPathComponent("document.pdf")
         let pdfSize = (try? FileManager.default.attributesOfItem(atPath: pdfURL.path)[.size] as? Int) ?? 0
         let ok = result.exitCode == 0 && pdfSize > 0 && !result.timedOut
-        return (ok, result.stdout + result.stderr)
+        return (ok, result.stdout + result.stderr, result.timedOut)
     }
 
     /// Spawn `process`, capture its stdout/stderr through pipes, run a
@@ -674,12 +696,56 @@ final class Compiler {
         return s
     }
 
+    /// The issue shown when a watchdog kills a runaway engine run. The message
+    /// points at the usual culprits (huge PGFPlots sample counts, loops) so the
+    /// user knows why the previous preview was kept.
+    private func timeoutIssue(engineName: String) -> LatexIssue {
+        LatexIssue(line: -1,
+                   message: "\(engineName) did not finish in time and was stopped. "
+                          + "The previous preview was kept — try lowering PGFPlots "
+                          + "sample counts or removing a runaway loop.",
+                   context: "", hint: "")
+    }
+
+    /// Inject preview-only preamble overrides into `source` (in memory — the
+    /// user's file is never touched). Live typing feedback reads "layout is
+    /// jumping around" when floats get shuffled to page tops/bottoms, so in
+    /// live-preview compiles figures and tables are pinned in place where the
+    /// source puts them. Manual compiles skip this and render the true layout.
+    private func injectLivePreviewOverrides(into source: String) -> String {
+        guard source.contains("\\begin{figure}") || source.contains("\\begin{table}") else {
+            return source
+        }
+        let floatLoaded = try! NSRegularExpression(
+            pattern: #"\\usepackage(\[[^\]]*\])?\{float\}"#)
+            .firstMatch(in: source, range: NSRange(location: 0,
+                                                   length: (source as NSString).length)) != nil
+        var overrides = ""
+        if !floatLoaded {
+            overrides += "\\usepackage{float}\n"
+        }
+        overrides += "\\floatplacement{figure}{H}\n\\floatplacement{table}{H}\n"
+        guard let beginDocument = source.range(of: "\\begin{document}") else {
+            return source   // malformed preamble — let the engine report it
+        }
+        let block = "% --- FlashTeX live-preview overrides ---\n"
+                 + overrides
+                 + "% --- end ---\n"
+        return source.replacingCharacters(in: beginDocument,
+                                          with: block + "\\begin{document}")
+    }
+
     /// True when the source asks the engine to execute external commands, in
     /// which case `-shell-escape` is granted. Everything else compiles with
     /// restricted \write18 — the safer default.
     private func needsShellEscape() -> Bool {
         guard let current = currentSource else { return false }
-        let markers = ["\\write18", "\\begin{asy}", "runsystem", "\\immediate\\write18"]
+        // \write18 and Asymptote cover the classic cases; minted, pythontex,
+        // SageTeX and the gnuplot terminal all shell out too and would
+        // otherwise fail silently without their external tools.
+        let markers = ["\\write18", "runsystem", "\\immediate\\write18",
+                       "\\begin{asy}", "\\usepackage{minted}", "\\begin{minted}",
+                       "\\mintinline", "pythontex", "\\sage", "gnuplot"]
         return markers.contains { current.contains($0) }
     }
 
