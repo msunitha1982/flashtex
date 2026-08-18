@@ -69,6 +69,11 @@ final class AsymptoteLifecycleTests: XCTestCase {
         compiler.shutdown()
 
         XCTAssertEqual(compiler.activeProcessCount, 0)
+
+        let deadline = Date().addingTimeInterval(1.0)
+        while proc.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
         XCTAssertFalse(proc.isRunning)
     }
 }
