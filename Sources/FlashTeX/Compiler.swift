@@ -56,7 +56,7 @@ final class Compiler {
 
     private var debounce: Timer?
     private let lock = NSLock()
-    private var currentProcess: Process?
+    private var activeProcesses = Set<Process>()
     private var lastBuildDir: URL?
     private let generation = AtomicInt(0)
     /// The source of the most recent request — consulted at pass time to
@@ -74,6 +74,44 @@ final class Compiler {
 
     init() {
         sweepStaleBuildDirs()
+    }
+
+    // MARK: - Process Tracking & Cancellation
+
+    func registerProcess(_ process: Process) {
+        lock.lock()
+        activeProcesses.insert(process)
+        lock.unlock()
+    }
+
+    func unregisterProcess(_ process: Process) {
+        lock.lock()
+        activeProcesses.remove(process)
+        lock.unlock()
+    }
+
+    func terminateActiveProcesses() {
+        lock.lock()
+        let procs = Array(activeProcesses)
+        activeProcesses.removeAll()
+        lock.unlock()
+        for proc in procs {
+            if proc.isRunning {
+                proc.terminate()
+            }
+        }
+    }
+
+    /// Number of active processes currently tracked.
+    var activeProcessCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return activeProcesses.count
+    }
+
+    /// Current generation counter value.
+    var currentGeneration: Int {
+        generation.load()
     }
 
     // MARK: - Public API
@@ -102,17 +140,13 @@ final class Compiler {
         compile(source: source, gateOnBalance: false, livePreview: false)
     }
 
-    /// Cancel any in-flight engine run without starting a new one. The bumped
-    /// generation counter makes the pipeline's `guard generation == gen`
+    /// Cancel any in-flight engine or Asymptote run without starting a new one.
+    /// The bumped generation counter makes the pipeline's `guard generation == gen`
     /// checks fail, so no stale report reaches the UI.
     func stopCompiling() {
         debounce?.invalidate()
-        lock.lock()
-        let proc = currentProcess
-        currentProcess = nil
-        lock.unlock()
         generation.increment()
-        if let proc, proc.isRunning { proc.terminate() }
+        terminateActiveProcesses()
     }
 
     /// Drop a pending (debounced) compile without starting one. An in-flight
@@ -124,13 +158,12 @@ final class Compiler {
 
     func shutdown() {
         debounce?.invalidate()
+        generation.increment()
+        terminateActiveProcesses()
         lock.lock()
-        let proc = currentProcess
-        currentProcess = nil
         let dir = lastBuildDir
         lastBuildDir = nil
         lock.unlock()
-        if let proc, proc.isRunning { proc.terminate() }
         if let dir { try? FileManager.default.removeItem(at: dir) }
     }
 
@@ -154,13 +187,7 @@ final class Compiler {
             return
         }
         let gen = generation.increment()
-        lock.lock()
-        let running = currentProcess
-        currentProcess = nil
-        lock.unlock()
-        if let running, running.isRunning {
-            running.terminate()
-        }
+        terminateActiveProcesses()
 
         DispatchQueue.main.async { [weak self] in
             self?.onStatusStarted?()
@@ -260,7 +287,8 @@ final class Compiler {
                                        firstRun: firstRunForEngine)
             engineTimedOut = engineTimedOut || pass.timedOut
             if pass.ok && asyCount > 0 {
-                let asyFailures = runAsymptoteIfNeeded(buildDir: buildDir)
+                let asyFailures = runAsymptoteIfNeeded(buildDir: buildDir, gen: gen)
+                guard generation.load() == gen else { return nil }
                 if !asyFailures.isEmpty {
                     let elapsedMs = Int64(Date().timeIntervalSince(start) * 1000)
                     return asymptoteFailureReport(asyFailures, gen: gen, elapsedMs: elapsedMs)
@@ -341,7 +369,8 @@ final class Compiler {
             // produced don't exist, and continuing would only produce a
             // document full of missing figures.
             if ok {
-                let asyFailures = runAsymptoteIfNeeded(buildDir: buildDir)
+                let asyFailures = runAsymptoteIfNeeded(buildDir: buildDir, gen: gen)
+                guard generation.load() == gen else { return nil }
                 if !asyFailures.isEmpty {
                     let elapsedMs = Int64(Date().timeIntervalSince(start) * 1000)
                     return asymptoteFailureReport(asyFailures, gen: gen, elapsedMs: elapsedMs)
@@ -552,10 +581,6 @@ final class Compiler {
             ioGroup.leave()
         }
 
-        lock.lock()
-        currentProcess = process
-        lock.unlock()
-
         let sema = DispatchSemaphore(value: 0)
         var exitCode: Int32 = -1
         var timedOut = false
@@ -564,12 +589,12 @@ final class Compiler {
             sema.signal()
         }
 
+        registerProcess(process)
+        defer { unregisterProcess(process) }
+
         do {
             try process.run()
         } catch {
-            lock.lock()
-            if currentProcess === process { currentProcess = nil }
-            lock.unlock()
             return (-1, false, "", "")
         }
 
@@ -592,10 +617,6 @@ final class Compiler {
         watchdog.cancel()
         ioGroup.wait()
 
-        lock.lock()
-        if currentProcess === process { currentProcess = nil }
-        lock.unlock()
-
         let out = String(data: stdout, encoding: .utf8) ?? ""
         let err = String(data: stderr, encoding: .utf8) ?? ""
         return (exitCode, timedOut, out, err)
@@ -606,11 +627,12 @@ final class Compiler {
     /// the generated figures; files are processed in parallel. Returns the
     /// names of any files whose `asy` run failed (non-zero exit), so the
     /// caller can abort the pipeline instead of embedding missing figures.
-    private func runAsymptoteIfNeeded(buildDir: URL) -> [String] {
+    private func runAsymptoteIfNeeded(buildDir: URL, gen: Int) -> [String] {
         let fm = FileManager.default
         guard let files = try? fm.contentsOfDirectory(atPath: buildDir.path) else { return [] }
         let asyFiles = files.filter { $0.hasSuffix(".asy") }.sorted()
         guard !asyFiles.isEmpty, let asyURL = TeX.findExecutable("asy") else { return [] }
+        guard generation.load() == gen else { return [] }
 
         let group = DispatchGroup()
         let queue = DispatchQueue(label: "flashtex.asy", attributes: .concurrent)
@@ -619,23 +641,59 @@ final class Compiler {
         for file in asyFiles {
             group.enter()
             queue.async {
-                defer { group.leave() }
                 let process = Process()
+                defer {
+                    self.unregisterProcess(process)
+                    group.leave()
+                }
+                guard self.generation.load() == gen else { return }
+
+                let env = TeX.environment()
                 process.executableURL = asyURL
                 process.currentDirectoryURL = buildDir
-                process.environment = TeX.environment()
+                process.environment = env
                 process.arguments = [file]
-                process.standardOutput = FileHandle.nullDevice
-                process.standardError = FileHandle.nullDevice
-                let success: Bool
+
+                let outPipe = Pipe()
+                let errPipe = Pipe()
+                process.standardOutput = outPipe
+                process.standardError = errPipe
+
+                var launchError: Error? = nil
+                var stderrData = Data()
+
+                let readGroup = DispatchGroup()
+                readGroup.enter()
+                DispatchQueue.global(qos: .utility).async {
+                    _ = outPipe.fileHandleForReading.readDataToEndOfFile()
+                    readGroup.leave()
+                }
+                readGroup.enter()
+                DispatchQueue.global(qos: .utility).async {
+                    stderrData = errPipe.fileHandleForReading.readDataToEndOfFile()
+                    readGroup.leave()
+                }
+
+                self.registerProcess(process)
+
                 do {
                     try process.run()
                     process.waitUntilExit()
-                    success = process.terminationStatus == 0
                 } catch {
-                    success = false
+                    launchError = error
                 }
+
+                readGroup.wait()
+
+                guard self.generation.load() == gen else { return }
+
+                let success = launchError == nil && process.terminationStatus == 0
+
                 if !success {
+                    let stderrStr = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    if !stderrStr.isEmpty {
+                        print("[FlashTeX] asy failed for \(file): \(stderrStr)")
+                    }
                     failureLock.lock()
                     failed.append(file)
                     failureLock.unlock()
@@ -643,6 +701,8 @@ final class Compiler {
             }
         }
         group.wait()
+
+        guard generation.load() == gen else { return [] }
         return failed
     }
 
